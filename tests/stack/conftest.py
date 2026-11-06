@@ -1,8 +1,17 @@
+import io
 import os
+import uuid
+from types import SimpleNamespace
 
 import boto3
+import django
+import httpx
 import pytest
 from botocore.config import Config
+
+django.setup()  # tests seed data through the real operator commands
+
+from django.core.management import call_command  # noqa: E402
 
 
 def _s3(access_key, secret_key):
@@ -38,3 +47,52 @@ def backend_s3():
 @pytest.fixture(scope="session")
 def admin_s3():
     return _s3(os.environ["S3_ADMIN_ACCESS_KEY"], os.environ["S3_ADMIN_SECRET_KEY"])
+
+
+def ops(*args):
+    """Run an operator management command (back-office DB role) and return its output."""
+    out = io.StringIO()
+    call_command(*args, stdout=out)
+    return out.getvalue().strip()
+
+
+@pytest.fixture(scope="session")
+def world():
+    """Two Tenants and three Users, unique per run so the suite can be repeated.
+
+    alice: admin of A.  bob: member of B.  carol: member of A and admin of B.
+    """
+    sfx = uuid.uuid4().hex[:8]
+    w = SimpleNamespace(password=f"pw-{sfx}", names={}, tenants={}, emails={})
+    for key in ("a", "b"):
+        w.names[key] = f"Tenant {key.upper()} {sfx}"
+        w.tenants[key] = ops("create_tenant", w.names[key])
+    for key in ("alice", "bob", "carol"):
+        w.emails[key] = f"{key}-{sfx}@example.com"
+        ops("create_user", w.emails[key], w.password)
+    ops("add_membership", w.emails["alice"], w.names["a"], "admin")
+    ops("add_membership", w.emails["bob"], w.names["b"], "member")
+    ops("add_membership", w.emails["carol"], w.names["a"], "member")
+    ops("add_membership", w.emails["carol"], w.names["b"], "admin")
+    return w
+
+
+@pytest.fixture(scope="session")
+def login(backend_url, world):
+    def _login(who, password=None):
+        return httpx.post(
+            f"{backend_url}/api/auth/login",
+            json={"email": world.emails[who], "password": password or world.password},
+        )
+
+    return _login
+
+
+@pytest.fixture(scope="session")
+def bearer(login):
+    """Authorization header for a user, from a real login."""
+
+    def _bearer(who):
+        return {"Authorization": f"Bearer {login(who).json()['access']}"}
+
+    return _bearer

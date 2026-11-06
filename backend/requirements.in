@@ -3,3 +3,5 @@ django-ninja
 psycopg[binary]
 boto3
 gunicorn
+pyjwt
+django-cors-headers

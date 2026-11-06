@@ -4,4 +4,4 @@ set -eu
 cd "$(dirname "$0")/.."
 docker compose up -d --build --wait
 docker compose --profile test run --rm --build tests
-uv run --no-project --with pytest pytest -q -p no:cacheprovider tests/host
+uv run --no-project --with pytest --with httpx pytest -q -p no:cacheprovider tests/host

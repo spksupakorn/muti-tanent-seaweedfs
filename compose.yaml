@@ -1,5 +1,14 @@
 name: filestore
 
+x-backend-env: &backend-env
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set in .env}
+  POSTGRES_DB: ${POSTGRES_DB:-filestore}
+  POSTGRES_HOST: postgres
+  S3_ENDPOINT_URL: http://seaweedfs:8333
+  S3_BUCKET: ${S3_BUCKET:-files}
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set in .env}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:?set in .env}
+
 services:
   postgres:
     image: postgres:18-alpine
@@ -7,8 +16,12 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-filestore}
       POSTGRES_USER: ${POSTGRES_USER:-filestore}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      DB_OWNER_PASSWORD: ${DB_OWNER_PASSWORD:?set in .env}
+      DB_APP_PASSWORD: ${DB_APP_PASSWORD:?set in .env}
+      DB_BACKOFFICE_PASSWORD: ${DB_BACKOFFICE_PASSWORD:?set in .env}
     volumes:
       - pgdata:/var/lib/postgresql
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 3s
@@ -29,7 +42,7 @@ services:
         ]}'
         "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY" "$$S3_BUCKET" "$$S3_BUCKET" "$$S3_BUCKET"
         "$$S3_ADMIN_ACCESS_KEY" "$$S3_ADMIN_SECRET_KEY" > /tmp/s3.json
-        && exec weed server -dir=/data -master.volumeSizeLimitMB=256
+        && exec weed server -dir=/data -master.volumeSizeLimitMB=256 -volume.max=100
         -filer -s3 -s3.config=/tmp/s3.json
     environment:
       S3_BUCKET: ${S3_BUCKET:-files}
@@ -59,22 +72,51 @@ services:
         condition: service_healthy
     restart: "no"
 
-  backend:
-    build: ./backend
+  # Operator tool for storage status. Without a password it would bind loopback inside the
+  # container (unreachable); with one it binds 0.0.0.0 in the container, and the host only
+  # publishes it on 127.0.0.1.
+  seaweedfs-admin:
+    image: chrislusf/seaweedfs:4.52
+    command: ["admin", "-master=seaweedfs:9333", "-dataDir=/data", "-port=12535"]
     environment:
-      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set in .env}
-      POSTGRES_DB: ${POSTGRES_DB:-filestore}
-      POSTGRES_USER: ${POSTGRES_USER:-filestore}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
-      S3_ENDPOINT_URL: http://seaweedfs:8333
-      S3_BUCKET: ${S3_BUCKET:-files}
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set in .env}
-      S3_SECRET_KEY: ${S3_SECRET_KEY:?set in .env}
+      WEED_ADMIN_PASSWORD: ${SEAWEED_ADMIN_PASSWORD:?set in .env}
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:12535:12535"
+    volumes:
+      - seaweed-admin-data:/data
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:12535/login"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # Schema changes run as the owner role, never as the API's role.
+  migrate:
+    build: ./backend
+    command: ["python", "manage.py", "migrate", "--noinput"]
+    environment:
+      <<: *backend-env
+      POSTGRES_USER: filestore_owner
+      POSTGRES_PASSWORD: ${DB_OWNER_PASSWORD:?set in .env}
     depends_on:
       postgres:
         condition: service_healthy
+    restart: "no"
+
+  backend:
+    build: ./backend
+    environment:
+      <<: *backend-env
+      POSTGRES_USER: filestore_app
+      POSTGRES_PASSWORD: ${DB_APP_PASSWORD:?set in .env}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
       storage-init:
         condition: service_completed_successfully
     healthcheck:
@@ -83,20 +125,41 @@ services:
       timeout: 6s
       retries: 20
 
+  # Platform operator commands, as the back-office role (bypasses RLS on purpose):
+  #   docker compose run --rm ops create_tenant "Acme"
+  #   docker compose run --rm ops create_user alice@example.com 'a-password'
+  #   docker compose run --rm ops add_membership alice@example.com "Acme" admin
+  ops:
+    profiles: ["ops"]
+    build: ./backend
+    entrypoint: ["python", "manage.py"]
+    environment:
+      <<: *backend-env
+      POSTGRES_USER: filestore_backoffice
+      POSTGRES_PASSWORD: ${DB_BACKOFFICE_PASSWORD:?set in .env}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   # Runs inside the compose network: the S3 port is not published to the host.
   tests:
     profiles: ["test"]
-    build: ./tests
+    build:
+      context: .
+      dockerfile: tests/Dockerfile
     environment:
+      <<: *backend-env
       BACKEND_URL: http://backend:8000
-      S3_ENDPOINT_URL: http://seaweedfs:8333
-      S3_BUCKET: ${S3_BUCKET:-files}
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set in .env}
-      S3_SECRET_KEY: ${S3_SECRET_KEY:?set in .env}
       S3_ADMIN_ACCESS_KEY: ${S3_ADMIN_ACCESS_KEY:?set in .env}
       S3_ADMIN_SECRET_KEY: ${S3_ADMIN_SECRET_KEY:?set in .env}
+      # Seeding runs the operator commands as the back-office role; RLS probes log in as each role.
+      POSTGRES_USER: filestore_backoffice
+      POSTGRES_PASSWORD: ${DB_BACKOFFICE_PASSWORD:?set in .env}
+      DB_OWNER_PASSWORD: ${DB_OWNER_PASSWORD:?set in .env}
+      DB_APP_PASSWORD: ${DB_APP_PASSWORD:?set in .env}
     volumes:
       - ./tests:/tests:ro
+      - ./backend:/app:ro
     depends_on:
       backend:
         condition: service_healthy
@@ -104,3 +167,4 @@ services:
 volumes:
   pgdata:
   seaweed-data:
+  seaweed-admin-data:

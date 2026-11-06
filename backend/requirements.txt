@@ -3,7 +3,9 @@
 annotated-types==0.8.0
     # via pydantic
 asgiref==3.13.0
-    # via django
+    # via
+    #   django
+    #   django-cors-headers
 boto3==1.43.125
     # via -r requirements.in
 botocore==1.43.125
@@ -13,7 +15,10 @@ botocore==1.43.125
 django==5.2.19
     # via
     #   -r requirements.in
+    #   django-cors-headers
     #   django-ninja
+django-cors-headers==4.9.0
+    # via -r requirements.in
 django-ninja==1.7.3
     # via -r requirements.in
 gunicorn==26.2.0
@@ -30,6 +35,8 @@ pydantic==2.14.3
     # via django-ninja
 pydantic-core==2.50.4
     # via pydantic
+pyjwt==2.15.1
+    # via -r requirements.in
 python-dateutil==2.9.0.post0
     # via botocore
 s3transfer==0.19.3
