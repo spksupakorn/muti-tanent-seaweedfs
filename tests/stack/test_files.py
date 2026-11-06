@@ -21,7 +21,9 @@ def b_headers(world):
     return auth_headers(world, "bob", "b")
 
 
-def upload(backend_url, headers, content, name="doc.bin", folder="/", content_type="application/pdf"):
+def upload(backend_url, headers, content, name=None, folder="/", content_type="application/pdf"):
+    # A fresh name each time: names are unique per folder, and tests share Tenants.
+    name = name or f"{uuid.uuid4().hex}.bin"
     return httpx.post(
         f"{backend_url}/api/files",
         headers=headers,
@@ -57,13 +59,14 @@ def assert_download_fails(backend_url, headers, file_id):
 )
 def test_upload_then_download_returns_the_same_bytes(backend_url, a_headers, size):
     content = os.urandom(size)
-    r = upload(backend_url, a_headers, content)
+    name = f"{uuid.uuid4().hex}.bin"
+    r = upload(backend_url, a_headers, content, name=name)
     assert r.status_code == 200, r.text
     assert r.json()["size"] == size
     d = download(backend_url, a_headers, r.json()["id"])
     assert d.status_code == 200
     assert d.content == content
-    assert "doc.bin" in d.headers["content-disposition"]
+    assert name in d.headers["content-disposition"]
 
 
 def test_large_upload_uses_multipart_and_round_trips(backend_url, a_headers):

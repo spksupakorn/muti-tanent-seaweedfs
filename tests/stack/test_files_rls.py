@@ -26,7 +26,7 @@ def app():
 def two_tenants_with_files(world):
     for key in ("a", "b"):
         File.objects.create(
-            tenant_id=world.tenants[key], name=f"rls-{key}.bin", wrapped_data_key=b"x", status=File.Status.ACTIVE
+            tenant_id=world.tenants[key], name=f"rls-{key}-{uuid.uuid4().hex[:8]}.bin", wrapped_data_key=b"x", status=File.Status.ACTIVE
         )
     return world
 

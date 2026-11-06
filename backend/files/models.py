@@ -31,6 +31,14 @@ class File(models.Model):
 
     class Meta:
         indexes = [models.Index(fields=["tenant", "folder"])]
+        # One active File per name in a Folder of a Tenant. Pending uploads and (later) Trash do not count.
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "folder", "name"],
+                condition=models.Q(status="active"),
+                name="unique_active_file_name_per_folder",
+            )
+        ]
 
     @property
     def object_key(self) -> str:

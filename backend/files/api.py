@@ -43,6 +43,14 @@ class ListOut(Schema):
     files: list[FileOut]
 
 
+class UpdateIn(Schema):
+    name: Optional[str] = None
+    folder: Optional[str] = None
+
+
+NAME_TAKEN = "A file with this name already exists in this folder"
+
+
 class TenantKeyDestroyed(Exception):
     pass
 
@@ -105,6 +113,9 @@ def upload(
     folder = normalize_folder(folder)
     name = normalize_name(name or file.name or "")
     tenant = request.tenant
+    # Fail early for the common case; the unique index still decides a race (see the except below).
+    if File.objects.filter(tenant=tenant, folder=folder, name=name, status=File.Status.ACTIVE).exists():
+        raise HttpError(409, NAME_TAKEN)
     file_id = uuid4()
 
     # Commit the pending row first, on its own connection; the row becomes active only once the
@@ -129,11 +140,34 @@ def upload(
         storage.put_stream(record.object_key, crypto.EncryptingReader(file, data_key))
         with rls.scope(request, DIRECT):
             File.objects.using(DIRECT).filter(id=file_id).update(status=File.Status.ACTIVE, size=file.size)
+    except IntegrityError:  # another upload took the name between the check above and now
+        log.warning("upload %s lost the race for its name; discarding", file_id)
+        _discard(request, record)
+        raise HttpError(409, NAME_TAKEN)
     except Exception:
         log.exception("upload %s failed", file_id)
         _discard(request, record)
         raise HttpError(500, "Upload failed")
     record.size, record.status = file.size, File.Status.ACTIVE
+    return record
+
+
+@router.patch("/files/{file_id}", auth=TenantAuth(), response=FileOut)
+def update_file(request, file_id: UUID, data: UpdateIn):
+    """Rename and/or move. Only the record changes: the stored object is keyed by id."""
+    if data.name is None and data.folder is None:
+        raise HttpError(422, "Give a new name, a new folder, or both")
+    record = get_object_or_404(File, id=file_id, tenant=request.tenant, status=File.Status.ACTIVE)
+    name = normalize_name(data.name) if data.name is not None else record.name
+    folder = normalize_folder(data.folder) if data.folder is not None else record.folder
+    if (name, folder) == (record.name, record.folder):
+        return record
+    record.name, record.folder = name, folder
+    try:
+        with transaction.atomic():  # a savepoint, so a conflict does not poison the request transaction
+            record.save(update_fields=["name", "folder"])
+    except IntegrityError:
+        raise HttpError(409, NAME_TAKEN)
     return record
 
 
