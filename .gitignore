@@ -5,3 +5,8 @@
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# Local secrets
+.env
+__pycache__/
+.pytest_cache/

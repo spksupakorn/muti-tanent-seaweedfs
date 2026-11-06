@@ -1,0 +1,106 @@
+name: filestore
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-filestore}
+      POSTGRES_USER: ${POSTGRES_USER:-filestore}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # master + volume + filer + S3 in one process. The S3 identity file is rendered at start
+  # because s3.json cannot read env vars. "backend" is limited to one bucket; "admin" exists
+  # only so the test suite can prove that limit holds.
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.52
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        printf '{"identities":[
+        {"name":"backend","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Read:%s","Write:%s","List:%s"]},
+        {"name":"admin","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List"]}
+        ]}'
+        "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY" "$$S3_BUCKET" "$$S3_BUCKET" "$$S3_BUCKET"
+        "$$S3_ADMIN_ACCESS_KEY" "$$S3_ADMIN_SECRET_KEY" > /tmp/s3.json
+        && exec weed server -dir=/data -master.volumeSizeLimitMB=256
+        -filer -s3 -s3.config=/tmp/s3.json
+    environment:
+      S3_BUCKET: ${S3_BUCKET:-files}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set in .env}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?set in .env}
+      S3_ADMIN_ACCESS_KEY: ${S3_ADMIN_ACCESS_KEY:?set in .env}
+      S3_ADMIN_SECRET_KEY: ${S3_ADMIN_SECRET_KEY:?set in .env}
+    volumes:
+      - seaweed-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9333/cluster/status && wget -q -O /dev/null http://127.0.0.1:8888/"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  storage-init:
+    image: chrislusf/seaweedfs:4.52
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        out=$$(echo "s3.bucket.create -name $$S3_BUCKET" | weed shell -master=seaweedfs:9333 -filer=seaweedfs:8888 2>&1);
+        echo "$$out"; echo "$$out" | grep -qE "created bucket|already exists"
+    environment:
+      S3_BUCKET: ${S3_BUCKET:-files}
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    build: ./backend
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-filestore}
+      POSTGRES_USER: ${POSTGRES_USER:-filestore}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      S3_ENDPOINT_URL: http://seaweedfs:8333
+      S3_BUCKET: ${S3_BUCKET:-files}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set in .env}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?set in .env}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 5s
+      timeout: 6s
+      retries: 20
+
+  # Runs inside the compose network: the S3 port is not published to the host.
+  tests:
+    profiles: ["test"]
+    build: ./tests
+    environment:
+      BACKEND_URL: http://backend:8000
+      S3_ENDPOINT_URL: http://seaweedfs:8333
+      S3_BUCKET: ${S3_BUCKET:-files}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set in .env}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?set in .env}
+      S3_ADMIN_ACCESS_KEY: ${S3_ADMIN_ACCESS_KEY:?set in .env}
+      S3_ADMIN_SECRET_KEY: ${S3_ADMIN_SECRET_KEY:?set in .env}
+    volumes:
+      - ./tests:/tests:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  seaweed-data:
