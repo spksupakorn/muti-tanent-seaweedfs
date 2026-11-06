@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "muti_tanent_seaweedfs",
+  "project_id": "b8b50108-b06d-483b-9e7d-b0e77f12794a"
+}
