@@ -3,6 +3,7 @@ from datetime import timedelta
 
 import jwt
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 from ninja.errors import HttpError
 from ninja.security import HttpBearer
@@ -39,20 +40,26 @@ class UserAuth(HttpBearer):
 
     def authenticate(self, request, token):
         user_id = decode(token, "access")
-        if user_id is None or not User.objects.filter(id=user_id, is_active=True).exists():
+        if user_id is None:
             return None
-        rls.set_user(user_id)
+        # Inside the request transaction this is a savepoint and the settings outlive it; the
+        # atomic block also makes this work for a view that opts out of the request transaction.
+        with transaction.atomic():
+            rls.set_user(user_id)
+            if not User.objects.filter(id=user_id, is_active=True).exists():
+                return None
+            self.select_tenant(request, user_id)
         request.user_id = user_id
         return user_id
+
+    def select_tenant(self, request, user_id):
+        pass
 
 
 class TenantAuth(UserAuth):
     """UserAuth plus X-Tenant-ID, validated against the caller's Membership before use."""
 
-    def authenticate(self, request, token):
-        user_id = super().authenticate(request, token)
-        if user_id is None:
-            return None
+    def select_tenant(self, request, user_id):
         raw = request.headers.get("X-Tenant-ID")
         if not raw:
             raise HttpError(400, "X-Tenant-ID header required")
@@ -66,4 +73,3 @@ class TenantAuth(UserAuth):
         rls.set_tenant(tenant_id)
         request.tenant = membership.tenant
         request.role = membership.role
-        return user_id

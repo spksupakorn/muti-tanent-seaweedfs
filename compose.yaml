@@ -112,6 +112,8 @@ services:
       <<: *backend-env
       POSTGRES_USER: filestore_app
       POSTGRES_PASSWORD: ${DB_APP_PASSWORD:?set in .env}
+      # Only the backend can unwrap Tenant keys; ops, migrate and tests never get it.
+      MASTER_KEY: ${MASTER_KEY:?set in .env}
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:

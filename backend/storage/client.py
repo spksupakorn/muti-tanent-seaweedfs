@@ -1,8 +1,14 @@
 from functools import lru_cache
 
 import boto3
+from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 from django.conf import settings
+
+MIB = 1 << 20
+
+# Parts are buffered in memory: 2 workers x 8 MiB parts keeps one upload near 16-24 MiB.
+_TRANSFER = TransferConfig(multipart_threshold=8 * MIB, multipart_chunksize=8 * MIB, max_concurrency=2)
 
 
 @lru_cache(maxsize=1)
@@ -27,8 +33,18 @@ def put(key: str, body: bytes) -> None:
     _s3().put_object(Bucket=settings.S3_BUCKET, Key=key, Body=body)
 
 
+def put_stream(key: str, fileobj) -> None:
+    """Upload from a file-like object without holding the whole body in memory."""
+    _s3().upload_fileobj(fileobj, settings.S3_BUCKET, key, Config=_TRANSFER)
+
+
 def get(key: str) -> bytes:
     return _s3().get_object(Bucket=settings.S3_BUCKET, Key=key)["Body"].read()
+
+
+def open_stream(key: str):
+    """Streaming body of an object; raises botocore ClientError (NoSuchKey) if it is missing."""
+    return _s3().get_object(Bucket=settings.S3_BUCKET, Key=key)["Body"]
 
 
 def delete(key: str) -> None:

@@ -1,7 +1,9 @@
+import base64
 import os
 from pathlib import Path
 
 from corsheaders.defaults import default_headers
+from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -12,6 +14,7 @@ ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,back
 INSTALLED_APPS = [
     "corsheaders",
     "accounts",
+    "files",
 ]
 
 AUTH_USER_MODEL = "accounts.User"
@@ -38,6 +41,10 @@ DATABASES = {
     }
 }
 
+# A second connection to the same database for work that must commit on its own (file uploads).
+# It is not wrapped in the request transaction.
+DATABASES["direct"] = {**DATABASES["default"], "ATOMIC_REQUESTS": False}
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 USE_TZ = True
 
@@ -49,3 +56,8 @@ S3_SECRET_KEY = os.environ["S3_SECRET_KEY"]
 # Only the React app's origin may call the API from a browser.
 CORS_ALLOWED_ORIGINS = os.environ.get("CORS_ALLOWED_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173").split(",")
 CORS_ALLOW_HEADERS = (*default_headers, "x-tenant-id")
+
+# Wraps every Tenant key (ADR 0001). Only the backend gets it; unset elsewhere on purpose.
+MASTER_KEY = base64.b64decode(os.environ["MASTER_KEY"]) if os.environ.get("MASTER_KEY") else None
+if MASTER_KEY is not None and len(MASTER_KEY) != 32:
+    raise ImproperlyConfigured("MASTER_KEY must be 32 bytes, base64-encoded")

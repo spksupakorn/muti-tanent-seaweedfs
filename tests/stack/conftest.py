@@ -56,9 +56,8 @@ def ops(*args):
     return out.getvalue().strip()
 
 
-@pytest.fixture(scope="session")
-def world():
-    """Two Tenants and three Users, unique per run so the suite can be repeated.
+def new_world():
+    """Two Tenants and three Users, unique per call so the suite can be repeated.
 
     alice: admin of A.  bob: member of B.  carol: member of A and admin of B.
     """
@@ -75,6 +74,19 @@ def world():
     ops("add_membership", w.emails["carol"], w.names["a"], "member")
     ops("add_membership", w.emails["carol"], w.names["b"], "admin")
     return w
+
+
+@pytest.fixture(scope="session")
+def world():
+    return new_world()
+
+
+def auth_headers(w, who, tenant_key):
+    """Real login, then Authorization + X-Tenant-ID for the given Tenant ("a" or "b")."""
+    r = httpx.post(
+        f"{os.environ['BACKEND_URL']}/api/auth/login", json={"email": w.emails[who], "password": w.password}
+    )
+    return {"Authorization": f"Bearer {r.json()['access']}", "X-Tenant-ID": w.tenants[tenant_key]}
 
 
 @pytest.fixture(scope="session")

@@ -5,3 +5,4 @@ boto3
 gunicorn
 pyjwt
 django-cors-headers
+cryptography

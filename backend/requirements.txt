@@ -12,6 +12,10 @@ botocore==1.43.125
     # via
     #   boto3
     #   s3transfer
+cffi==2.1.1
+    # via cryptography
+cryptography==50.0.2
+    # via -r requirements.in
 django==5.2.19
     # via
     #   -r requirements.in
@@ -31,6 +35,8 @@ psycopg==3.3.8
     # via -r requirements.in
 psycopg-binary==3.3.8
     # via psycopg
+pycparser==3.12
+    # via cffi
 pydantic==2.14.3
     # via django-ninja
 pydantic-core==2.50.4
