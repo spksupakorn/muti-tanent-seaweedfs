@@ -1,0 +1,12 @@
+# Opt-in, for running the backend on your own machine instead of in its container (see README,
+# "B. Backend and frontend on your machine"). It publishes Postgres and the S3 API on loopback only.
+# Do not use it with scripts/test.sh: a host check there asserts that these ports are closed.
+#
+#   export COMPOSE_FILE=compose.yaml:compose.dev.yaml
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+  seaweedfs:
+    ports:
+      - "127.0.0.1:8333:8333"

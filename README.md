@@ -1,19 +1,96 @@
 # Multi-tenant file storage (PoC)
 
+English · [ภาษาไทย](README.th.md)
+
 Django Ninja + Postgres + SeaweedFS + a React app, all on docker compose. See `CONTEXT.md` for terms and `docs/adr/` for decisions.
 
 ## Run
 
+There are two ways to run it. Both start with the same one-time setup: a `.env` with secrets, and a master key file.
+
+**Skip this block if `.env` and `~/.filestore/master.key` already exist** (as they do on a machine where the stack has run before). Changing either afterwards breaks that machine's data: a new master key makes every stored file unreadable for good, and new database passwords no longer match the existing database volume (the roles are only created the first time), so you would have to `docker compose down -v`, which deletes all data. The commands below are written to leave existing files alone.
+
 ```sh
-cp .env.example .env   # fill every value; generate secrets with: openssl rand -hex 24
-mkdir -p ~/.filestore && openssl rand -base64 32 > ~/.filestore/master.key   # then set MASTER_KEY_HOST_FILE in .env (absolute path)
-docker compose up -d --build --wait
-curl http://127.0.0.1:8000/api/health
+if [ ! -f .env ]; then
+  cp .env.example .env && chmod 660 .env
+  # Put a random secret in every empty value (macOS; on Linux remove the '' after -i):
+  for k in DJANGO_SECRET_KEY POSTGRES_PASSWORD S3_ACCESS_KEY S3_SECRET_KEY S3_ADMIN_ACCESS_KEY S3_ADMIN_SECRET_KEY \
+           SEAWEED_ADMIN_PASSWORD DB_OWNER_PASSWORD DB_APP_PASSWORD DB_BACKOFFICE_PASSWORD BACKOFFICE_SECRET_KEY; do
+    sed -i '' "s|^$k=.*|$k=$(openssl rand -hex 24)|" .env
+  done
+  # The master key is a file outside this repo. MASTER_KEY_HOST_FILE must be an absolute path.
+  sed -i '' "s|^MASTER_KEY_HOST_FILE=.*|MASTER_KEY_HOST_FILE=$HOME/.filestore/master.key|" .env
+fi
+mkdir -p ~/.filestore
+if [ ! -f ~/.filestore/master.key ]; then   # keep a safe copy of this file: without it no stored file can be read again
+  openssl rand -base64 32 > ~/.filestore/master.key && chmod 600 ~/.filestore/master.key
+fi
 ```
 
-Published on the host, loopback only: the React app (`127.0.0.1:5173`), the backend (`127.0.0.1:8000`), the operators' back office (`127.0.0.1:8001`) and the SeaweedFS admin UI (`127.0.0.1:12535`, user `admin`, password `SEAWEED_ADMIN_PASSWORD` from `.env`). Postgres, S3, filer and master stay inside the compose networks. There are three (`db`, `storage`, `web`), so the back office and the React app have no network path to SeaweedFS, whose filer takes unauthenticated requests.
+### A. Everything in Docker Compose
 
-Create a user and an organization first (see Operator commands), then sign in at http://127.0.0.1:5173.
+```sh
+docker compose up -d --build --wait    # the first run takes a few minutes: it builds the images and pulls SeaweedFS (about 1 GB)
+
+# Nothing exists yet: create an organization, a person in it, and a Platform operator for the back office.
+docker compose run --rm ops create_tenant "Acme"
+docker compose run --rm ops create_user alice@example.com 'a-password'
+docker compose run --rm ops add_membership alice@example.com "Acme" admin
+docker compose run --rm ops create_user --operator you@example.com 'another-password'
+```
+
+Open these, all on loopback only:
+
+| | |
+|---|---|
+| http://127.0.0.1:5173 | the app: sign in as `alice@example.com` |
+| http://127.0.0.1:8001/admin/ | the back office: sign in as the operator |
+| http://127.0.0.1:12535 | SeaweedFS admin: user `admin`, password `SEAWEED_ADMIN_PASSWORD` from `.env` |
+| http://127.0.0.1:8000/api/health | the API's health check |
+
+Postgres, S3, filer and master stay inside the compose networks. There are three (`db`, `storage`, `web`), so the back office and the React app have no network path to SeaweedFS, whose filer takes unauthenticated requests.
+
+Everyday commands:
+
+```sh
+docker compose ps                  # what is running
+docker compose logs -f backend     # follow one service: backend, backoffice, seaweedfs, maintenance, ...
+docker compose stop                # stop everything, keep the data
+docker compose down                # remove the containers, keep the data (the volumes)
+docker compose down -v             # also delete the data (database and files): start again from nothing
+COMPOSE_PROFILES=backup docker compose up -d --build --wait   # also run the Backup services (see Backup and restore)
+```
+
+### B. Backend and frontend on your machine, the rest in Docker
+
+Postgres and SeaweedFS stay in Docker. Their ports are closed by default, so `compose.dev.yaml` opens just those two on loopback. You need `uv` (it fetches Python) and Node 20 or newer.
+
+```sh
+export COMPOSE_FILE=compose.yaml:compose.dev.yaml    # in every terminal that runs `docker compose` below
+docker compose up -d --wait postgres seaweedfs storage-init migrate    # database, storage, the bucket, the schema
+```
+
+Terminal 1, the backend (do not also start the `backend` container: both want port 8000):
+
+```sh
+set -a; . ./.env; set +a
+cd backend
+POSTGRES_DB=filestore POSTGRES_USER=filestore_app POSTGRES_PASSWORD="$DB_APP_PASSWORD" POSTGRES_HOST=127.0.0.1 \
+S3_ENDPOINT_URL=http://127.0.0.1:8333 S3_BUCKET=files MASTER_KEY_FILE="$MASTER_KEY_HOST_FILE" \
+uv run --python 3.12 --no-project --with-requirements requirements.txt python manage.py runserver 127.0.0.1:8000
+```
+
+Terminal 2, the frontend (do not also start the `frontend` container: both want port 5173):
+
+```sh
+cd frontend
+npm install
+npm run dev        # http://127.0.0.1:5173, calls the API at http://127.0.0.1:8000
+```
+
+Create the first organization and user with the same `docker compose run --rm ops ...` commands as in A; they use the same database. Open the app through `127.0.0.1` or `localhost` on port 5173: those are the only origins the API allows (`CORS_ALLOWED_ORIGINS`). The back office is not started in this mode; add `backoffice` to the `up` command if you want it. Do not run `scripts/test.sh` with `compose.dev.yaml` active: one of its checks asserts that Postgres and S3 are not published.
+
+To stop: Ctrl-C in the two terminals, then `docker compose down` (or `stop`).
 
 ## Master key
 
