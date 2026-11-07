@@ -79,6 +79,15 @@ A Backup lives in `./backups`: `files/` (the stored, still-encrypted files, copi
 
 ```sh
 ./scripts/test.sh          # black-box API tests inside the compose network + host port checks (needs uv)
+./scripts/smoke.sh         # the four claims of the PoC in one command (see below); ends with the destructive restore drill
 ./scripts/restore-drill.sh # backup and restore (destructive, see above)
 ./scripts/e2e.sh           # the React app in a real browser (needs node and jq; downloads Chromium once)
 ```
+
+### Smoke test
+
+`./scripts/smoke.sh` proves, on the real stack, that (1) a tenant asking for another tenant's file id gets 404, (2) unfiltered queries as the API's database role show nothing of other tenants (and nothing when no tenant is selected), (3) what SeaweedFS stores is ciphertext, read both as the object and from the raw volume files, and (4) the stack can be rebuilt from a Backup plus the separately kept master key (the restore drill). It exits non-zero if anything fails.
+
+It also breaks RLS, encryption and tenant access on purpose and requires its own checks to notice, so a green run is not an accident, and each "found nothing" has a positive control. `SMOKE_SKIP_DRILL=1` skips the destructive last step for a quick run (about 40 seconds).
+
+Two things learned about SeaweedFS while building it: it compresses compressible data on its volumes, and busybox `grep` in regex mode cannot search binary data. Searching volume files for plaintext therefore needs incompressible test data and `grep -F`.
