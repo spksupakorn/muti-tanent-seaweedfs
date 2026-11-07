@@ -48,7 +48,12 @@ docker compose run --rm ops create_user alice@example.com 'a-password'
 docker compose run --rm ops add_membership alice@example.com "Acme" admin   # admin | member
 docker compose run --rm ops destroy_tenant_key "Acme"    # its files become unreadable for good
 docker compose run --rm ops check_file_objects           # every file record has its stored object
+docker compose run --rm ops purge                         # see "Purge" below
 ```
+
+## Purge
+
+`ops purge` removes half-finished uploads older than 1 hour (record and stored object) and Trash older than 7 days (record and stored object). Run it whenever you like; it is safe to repeat. It deletes a trashed file's stored object only when the Backup already holds a complete copy of it (same key, full size), so with the Backup off, or while it is behind, expired Trash simply stays until a later run. Options: `--tenant NAME`, `--pending-hours`, `--trash-days`.
 
 ## Backup and restore
 

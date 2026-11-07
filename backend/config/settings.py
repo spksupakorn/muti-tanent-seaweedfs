@@ -64,3 +64,6 @@ _master_key_file = os.environ.get("MASTER_KEY_FILE")
 MASTER_KEY = base64.b64decode(Path(_master_key_file).read_text().strip()) if _master_key_file else None
 if MASTER_KEY is not None and len(MASTER_KEY) != 32:
     raise ImproperlyConfigured("The master key file must hold 32 bytes, base64-encoded")
+
+# Where the file Backup keeps its copies (read-only for `purge`, which never deletes the last copy of a file).
+BACKUP_FILES_DIR = os.environ.get("BACKUP_FILES_DIR")

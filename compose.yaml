@@ -153,6 +153,7 @@ services:
   #   docker compose run --rm ops create_tenant "Acme"
   #   docker compose run --rm ops create_user alice@example.com 'a-password'
   #   docker compose run --rm ops add_membership alice@example.com "Acme" admin
+  #   docker compose run --rm ops purge        # half-finished uploads > 1 h, Trash > 7 days (needs the Backup, see below)
   ops:
     profiles: ["ops"]
     build: ./backend
@@ -162,6 +163,10 @@ services:
       <<: *backend-env
       POSTGRES_USER: filestore_backoffice
       POSTGRES_PASSWORD: ${DB_BACKOFFICE_PASSWORD:?set in .env}
+      BACKUP_FILES_DIR: /backup/files
+    volumes:
+      # Read-only: `purge` only checks that the Backup has a copy before it deletes a trashed file's object.
+      - ${BACKUP_DIR:-./backups}/files:/backup/files:ro
     depends_on:
       migrate:
         condition: service_completed_successfully

@@ -56,6 +56,29 @@ step "take a Backup (database dump first, then wait for the file backup to catch
 docker compose run --rm -T db-backup once
 ls "$BACKUP_DIR"/db/*.complete >/dev/null || die "no complete backup marker"
 
+step "purge frees an expired trashed file only after the Backup holds a complete copy of it"
+docker compose stop filer-backup >/dev/null            # the Backup falls behind
+printf 'late file\n' > "$WORK/late.txt"
+setid late.txt "$(upload "$WORK/late.txt" late.txt)"
+curl -sf -X DELETE "$API/files/$(idof late.txt)" -H "Authorization: Bearer $TOK" -H "X-Tenant-ID: $TID" >/dev/null
+ops shell -c "from datetime import timedelta; from django.utils import timezone; from files.models import File; \
+File.objects.filter(id='$(idof late.txt)').update(trashed_at=timezone.now() - timedelta(days=8))" >/dev/null
+out=$(ops purge --tenant "$TENANT")
+case "$out" in *"1 trashed file(s) kept until the Backup has them"*) ;; *) die "purge did not wait for the Backup: $out" ;; esac
+ops check_file_objects --tenant "$TENANT" >/dev/null || die "the object was deleted before the Backup had it"
+ok "Backup behind: purge kept the expired file and its object ($out)"
+docker compose start filer-backup >/dev/null           # the Backup catches up
+want=$(( $(wc -c < "$WORK/late.txt") + 16 ))           # content + one 16-byte tag
+copy="$BACKUP_DIR/files/$TID/$(idof late.txt)"
+for _ in $(seq 60); do [ -f "$copy" ] && [ "$(wc -c < "$copy")" -eq "$want" ] && break; sleep 2; done
+[ -f "$copy" ] && [ "$(wc -c < "$copy")" -eq "$want" ] || die "filer.backup never produced a complete copy"
+out=$(ops purge --tenant "$TENANT")
+case "$out" in *"and 1 trashed file(s);"*) ;; *) die "purge did not remove the file once the Backup had it: $out" ;; esac
+[ "$(docker compose run --rm -T --no-deps backend python manage.py shell -c \
+  "from storage import client; print(client.stored_size('$TID/$(idof late.txt)'))" | tail -n 1)" = None ] || die "object still in storage"
+[ -f "$copy" ] || die "the Backup lost its copy"
+ok "Backup caught up: purge removed the record and the stored object; the Backup still has the file"
+
 step "the Backup holds no master key"
 python3 - "$MASTER_KEY_HOST_FILE" "$BACKUP_DIR" <<'PY' || die "master key found inside the Backup"
 import base64, os, sys
