@@ -8,6 +8,7 @@ from botocore.exceptions import ClientError
 from django.db import IntegrityError, transaction
 from django.http import StreamingHttpResponse
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from django.utils.http import content_disposition_header
 from ninja import File as FormFile
 from ninja import Form, Router, Schema, UploadedFile
@@ -49,6 +50,10 @@ class UpdateIn(Schema):
 
 
 NAME_TAKEN = "A file with this name already exists in this folder"
+
+
+class TrashedOut(FileOut):
+    trashed_at: datetime
 
 
 class TenantKeyDestroyed(Exception):
@@ -166,6 +171,33 @@ def update_file(request, file_id: UUID, data: UpdateIn):
     try:
         with transaction.atomic():  # a savepoint, so a conflict does not poison the request transaction
             record.save(update_fields=["name", "folder"])
+    except IntegrityError:
+        raise HttpError(409, NAME_TAKEN)
+    return record
+
+
+@router.delete("/files/{file_id}", auth=TenantAuth(), response={204: None})
+def trash_file(request, file_id: UUID):
+    """Soft delete: the record moves to Trash and the stored body stays where it is."""
+    record = get_object_or_404(File, id=file_id, tenant=request.tenant, status=File.Status.ACTIVE)
+    record.status, record.trashed_at = File.Status.TRASHED, timezone.now()
+    record.save(update_fields=["status", "trashed_at"])
+    return 204, None
+
+
+@router.get("/trash", auth=TenantAuth(), response=list[TrashedOut])
+def list_trash(request):
+    return File.objects.filter(tenant=request.tenant, status=File.Status.TRASHED).order_by("-trashed_at")
+
+
+@router.post("/trash/{file_id}/restore", auth=TenantAuth(), response=FileOut)
+def restore_file(request, file_id: UUID):
+    """Back to the original Folder under its old name; refused if that name is taken meanwhile."""
+    record = get_object_or_404(File, id=file_id, tenant=request.tenant, status=File.Status.TRASHED)
+    record.status, record.trashed_at = File.Status.ACTIVE, None
+    try:
+        with transaction.atomic():  # a savepoint, so a conflict does not poison the request transaction
+            record.save(update_fields=["status", "trashed_at"])
     except IntegrityError:
         raise HttpError(409, NAME_TAKEN)
     return record

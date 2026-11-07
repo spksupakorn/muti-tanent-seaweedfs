@@ -18,6 +18,7 @@ class File(models.Model):
     class Status(models.TextChoices):
         PENDING = "pending"  # row exists, body not (fully) stored yet
         ACTIVE = "active"
+        TRASHED = "trashed"  # deleted but kept (body included) until purged; frees its name
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="files")
@@ -28,6 +29,7 @@ class File(models.Model):
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
     wrapped_data_key = models.BinaryField()
     created_at = models.DateTimeField(auto_now_add=True)
+    trashed_at = models.DateTimeField(null=True)
 
     class Meta:
         indexes = [models.Index(fields=["tenant", "folder"])]
