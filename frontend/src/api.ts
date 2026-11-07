@@ -4,6 +4,7 @@ export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 export type Tenant = { id: string; name: string; role: "admin" | "member" };
 export type FileItem = { id: string; name: string; folder: string; size: number; content_type: string; created_at: string };
 export type Listing = { folder: string; folders: string[]; files: FileItem[] };
+export type TrashedItem = FileItem & { trashed_at: string };
 
 export class ApiError extends Error {
   constructor(
@@ -164,4 +165,29 @@ export async function upload(file: File, folder: string, onProgress: (fraction: 
   }
   onProgress(1);
   return JSON.parse(result.body);
+}
+
+/** Rename and/or move. A taken name is a 409 with a readable message; nothing changes then. */
+export async function updateFile(id: string, change: { name?: string; folder?: string }): Promise<FileItem> {
+  const res = await authed(`/api/files/${id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(change),
+  });
+  if (!res.ok) throw await errorOf(res);
+  return res.json();
+}
+
+export async function trashFile(id: string): Promise<void> {
+  const res = await authed(`/api/files/${id}`, { method: "DELETE" });
+  if (!res.ok) throw await errorOf(res);
+}
+
+export const listTrash = () => json<TrashedItem[]>("/api/trash");
+
+/** Back to the original folder under the old name; a 409 if that name was reused meanwhile. */
+export async function restoreFile(id: string): Promise<FileItem> {
+  const res = await authed(`/api/trash/${id}/restore`, { method: "POST" });
+  if (!res.ok) throw await errorOf(res);
+  return res.json();
 }

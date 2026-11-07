@@ -66,9 +66,16 @@ const sampler = (async () => {
     await page.waitForTimeout(40);
   }
 })();
+// Over a local network the upload ends in a blink, so slow it to ~20 MB/s for this step only.
+const cdp = await ctx.newCDPSession(page);
+await cdp.send("Network.enable");
+const throttle = (bytesPerSecond) =>
+  cdp.send("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: bytesPerSecond });
+await throttle(20 * 1024 * 1024);
 await page.getByLabel("Choose a file to upload").setInputFiles(join(work, "big.bin"));
 await page.getByRole("status").waitFor({ timeout: 60000 });
 await sampler;
+await throttle(-1);
 const distinct = [...new Set(seen)];
 check("upload shows a progress bar that advances", distinct.length >= 3 && Math.max(...seen) >= 99, `samples: ${distinct.slice(0, 8).join(",")}…`);
 check("uploaded file is listed", (await page.getByRole("cell", { name: "big.bin" }).count()) === 1);
@@ -89,7 +96,7 @@ check("a nested file downloads too", readFileSync(await dl2.path()).equals(neste
 await page.getByRole("button", { name: "↑ Up" }).click();
 await page.getByText("📁 inner").waitFor();
 check("Up goes back one level", (await page.getByRole("cell", { name: "inner.txt" }).count()) === 0);
-await page.getByRole("navigation").getByRole("button", { name: "All files" }).click();
+await page.getByRole("navigation", { name: "Folder path" }).getByRole("button", { name: "All files" }).click();
 await page.getByText("📁 docs").waitFor();
 check("breadcrumb returns to the root", (await page.getByRole("cell", { name: "big.bin" }).count()) === 1);
 
@@ -100,6 +107,84 @@ await page.getByLabel("Choose a file to upload").setInputFiles(join(work, "huge.
 await page.getByRole("alert").waitFor();
 check("a file over 100 MB gets a clear message", (await page.getByRole("alert").innerText()).includes("100 MB"));
 check("and is not sent to the server", posts.length === before);
+
+// --- rename, move, delete, Trash, restore
+const row = (name) => page.getByRole("row", { name });
+const upload2 = (name, text) =>
+  page.getByLabel("Choose a file to upload").setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(text) });
+const tab = (name) => page.getByRole("navigation", { name: "View" }).getByRole("button", { name });
+const crumbs = () => page.getByRole("navigation", { name: "Folder path" });
+
+await upload2("a.txt", "content of a");
+await row(/a\.txt/).waitFor();
+await upload2("b.txt", "content of b");
+await row(/b\.txt/).waitFor();
+
+await row(/a\.txt/).getByRole("button", { name: "Rename" }).click();
+await page.getByLabel("New name").fill("renamed.txt");
+await page.getByRole("button", { name: "Save" }).click();
+await row(/renamed\.txt/).waitFor();
+check("rename updates the list", (await page.getByRole("cell", { name: "a.txt", exact: true }).count()) === 0);
+check("and says what happened", (await page.getByRole("status").innerText()).includes("Renamed a.txt to renamed.txt"));
+
+await row(/b\.txt/).getByRole("button", { name: "Rename" }).click();
+await page.getByLabel("New name").fill("renamed.txt");
+await page.getByRole("button", { name: "Save" }).click();
+await page.getByRole("alert").waitFor();
+check("renaming onto a taken name shows a clear conflict", (await page.getByRole("alert").innerText()).includes("already exists"));
+await page.getByRole("button", { name: "Cancel" }).click();
+check("and changes nothing", (await page.getByRole("cell", { name: "b.txt", exact: true }).count()) === 1 && (await page.getByRole("cell", { name: "renamed.txt", exact: true }).count()) === 1);
+
+await row(/b\.txt/).getByRole("button", { name: "Move" }).click();
+await page.getByLabel("New folder").fill("/moved/here");
+await page.getByRole("button", { name: "Save" }).click();
+await page.getByText("📁 moved").waitFor();
+check("move takes the file out of this folder and shows the new folder", (await page.getByRole("cell", { name: "b.txt", exact: true }).count()) === 0);
+await page.getByText("📁 moved").click();
+await page.getByText("📁 here").click();
+await row(/b\.txt/).waitFor();
+check("the moved file is in its new folder", true);
+
+// Delete it from there: it must come back to /moved/here, not to the root.
+await row(/b\.txt/).getByRole("button", { name: "Delete" }).click();
+await page.getByText("This folder is empty.").waitFor();
+check("delete takes it out of the list", (await page.getByRole("cell", { name: "b.txt", exact: true }).count()) === 0);
+await tab("Trash").click();
+await row(/b\.txt/).waitFor();
+check("the deleted file is in Trash with its folder", (await row(/b\.txt/).innerText()).includes("/moved/here"));
+await row(/b\.txt/).getByRole("button", { name: "Restore" }).click();
+await page.getByText("Trash is empty.").waitFor().catch(() => {});
+check("restoring says where it went", (await page.getByRole("status").innerText()).includes("Restored b.txt to /moved/here"));
+await tab("Files").click();
+await crumbs().getByRole("button", { name: "All files" }).click();
+await page.getByText("📁 moved").click();
+await page.getByText("📁 here").click();
+await row(/b\.txt/).waitFor();
+check("a restored file is back in its original folder", true);
+await crumbs().getByRole("button", { name: "All files" }).click();
+
+// Restore onto a name that was reused meanwhile: refused, still recoverable, nothing overwritten.
+await row(/renamed\.txt/).getByRole("button", { name: "Delete" }).click();
+await page.getByRole("cell", { name: "renamed.txt", exact: true }).waitFor({ state: "detached" });
+await upload2("renamed.txt", "the newer file");
+await row(/renamed\.txt/).waitFor();
+await tab("Trash").click();
+await row(/renamed\.txt/).getByRole("button", { name: "Restore" }).click();
+await page.getByRole("alert").waitFor();
+check("restoring onto a reused name shows a clear conflict", (await page.getByRole("alert").innerText()).includes("already exists"));
+check("and the file stays in Trash", (await page.getByRole("cell", { name: "renamed.txt", exact: true }).count()) === 1);
+await tab("Files").click();
+const [dl3] = await Promise.all([page.waitForEvent("download"), row(/renamed\.txt/).getByRole("button", { name: "Download" }).click()]);
+check("the newer file was not overwritten", readFileSync(await dl3.path()).toString() === "the newer file");
+await row(/renamed\.txt/).getByRole("button", { name: "Delete" }).click();
+await page.getByRole("cell", { name: "renamed.txt", exact: true }).waitFor({ state: "detached" });
+await tab("Trash").click();
+// Two entries are called renamed.txt now (the original, 12 bytes, and the newer one, 14); restore the original.
+await row(/renamed\.txt.*\b12 B/).getByRole("button", { name: "Restore" }).click();
+await page.getByRole("status").waitFor();
+await tab("Files").click();
+const [dl4] = await Promise.all([page.waitForEvent("download"), row(/renamed\.txt/).getByRole("button", { name: "Download" }).click()]);
+check("once the name is free the restore works and the content is intact", readFileSync(await dl4.path()).toString() === "content of a");
 
 // --- tenant isolation in the UI
 await page.getByLabel("Organization").selectOption({ label: `${TENANT_B} (member)` });
@@ -123,7 +208,7 @@ check("an expired access token is refreshed without a new login", stored.access 
 
 // --- dead session: back to login
 await page.evaluate(() => localStorage.setItem("filestore.tokens", JSON.stringify({ access: "x.y.z", refresh: "x.y.z" })));
-await page.getByRole("navigation").getByRole("button", { name: "All files" }).click();
+await page.getByRole("navigation", { name: "Folder path" }).getByRole("button", { name: "All files" }).click();
 await page.getByRole("button", { name: "Sign in" }).waitFor();
 check("when the session cannot be refreshed the user lands on the login page", true);
 check("and the stored tokens are gone", (await page.evaluate(() => localStorage.getItem("filestore.tokens"))) === null);

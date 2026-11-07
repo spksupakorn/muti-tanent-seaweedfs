@@ -4,14 +4,19 @@ import {
   FileItem,
   Listing,
   Tenant,
+  TrashedItem,
   download,
   getTenantId,
   listFiles,
   listTenants,
+  listTrash,
   loggedIn,
   login,
   logout,
+  restoreFile,
   setTenantId,
+  trashFile,
+  updateFile,
   upload,
   whenSignedOut,
 } from "./api";
@@ -72,9 +77,12 @@ function Login({ onDone }: { onDone: () => void }) {
   );
 }
 
+type View = "files" | "trash";
+
 function Files() {
   const [tenants, setTenants] = useState<Tenant[] | null>(null);
   const [tenantId, setTenant] = useState<string | null>(getTenantId());
+  const [view, setView] = useState<View>("files");
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -95,6 +103,7 @@ function Files() {
   function switchTenant(id: string) {
     setTenantId(id);
     setTenant(id);
+    setView("files");
   }
 
   return (
@@ -119,10 +128,24 @@ function Files() {
       </header>
       {error && <p role="alert" className="error">{error}</p>}
       {tenants && tenants.length === 0 && <p>You do not belong to any organization yet.</p>}
-      {tenantId && <Browser key={tenantId} />}
+      {tenantId && (
+        <>
+          <nav aria-label="View" className="tabs">
+            <button className={view === "files" ? "tab on" : "tab"} aria-current={view === "files"} onClick={() => setView("files")}>
+              Files
+            </button>
+            <button className={view === "trash" ? "tab on" : "tab"} aria-current={view === "trash"} onClick={() => setView("trash")}>
+              Trash
+            </button>
+          </nav>
+          {view === "files" ? <Browser key={tenantId} /> : <Trash key={tenantId} />}
+        </>
+      )}
     </main>
   );
 }
+
+type Editing = { id: string; mode: "rename" | "move"; value: string };
 
 function Browser() {
   const [folder, setFolder] = useState("/");
@@ -130,6 +153,8 @@ function Browser() {
   const [error, setError] = useState("");
   const [progress, setProgress] = useState<number | null>(null);
   const [notice, setNotice] = useState("");
+  const [editing, setEditing] = useState<Editing | null>(null);
+  const [editError, setEditError] = useState("");
   const input = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async (path: string) => {
@@ -171,9 +196,42 @@ function Browser() {
     }
   }
 
+  function startEdit(file: FileItem, mode: Editing["mode"]) {
+    setEditing({ id: file.id, mode, value: mode === "rename" ? file.name : file.folder });
+    setEditError("");
+    setNotice("");
+  }
+
+  async function saveEdit(file: FileItem, e: React.FormEvent) {
+    e.preventDefault();
+    if (!editing) return;
+    const change = editing.mode === "rename" ? { name: editing.value } : { folder: editing.value };
+    try {
+      const updated = await updateFile(file.id, change);
+      setEditing(null);
+      setNotice(
+        editing.mode === "rename" ? `Renamed ${file.name} to ${updated.name}` : `Moved ${updated.name} to ${updated.folder}`,
+      );
+      await load(folder);
+    } catch (err) {
+      // A taken name lands here: say so next to the file, and leave everything as it was.
+      setEditError(errorText(err));
+    }
+  }
+
+  async function onDelete(file: FileItem) {
+    setNotice("");
+    try {
+      await trashFile(file.id);
+      setNotice(`Moved ${file.name} to Trash`);
+      await load(folder);
+    } catch (e) {
+      setError(errorText(e));
+    }
+  }
+
   const parts = folder.split("/").filter(Boolean);
   const goTo = (n: number) => setFolder("/" + parts.slice(0, n).join("/"));
-  const into = (name: string) => setFolder(folder === "/" ? `/${name}` : `${folder}/${name}`);
 
   return (
     <section>
@@ -213,22 +271,108 @@ function Browser() {
             {listing.folders.map((name) => (
               <tr key={`d:${name}`}>
                 <td colSpan={3}>
-                  <button className="link folder" onClick={() => into(name)}>📁 {name}</button>
+                  <button className="link folder" onClick={() => setFolder(folder === "/" ? `/${name}` : `${folder}/${name}`)}>
+                    📁 {name}
+                  </button>
                 </td>
                 <td />
               </tr>
             ))}
             {listing.files.map((f) => (
               <tr key={f.id}>
-                <td>{f.name}</td>
-                <td>{formatSize(f.size)}</td>
-                <td>{new Date(f.created_at).toLocaleString()}</td>
-                <td><button onClick={() => onDownload(f)}>Download</button></td>
+                {editing?.id === f.id ? (
+                  <td colSpan={4}>
+                    <form className="inline" onSubmit={(e) => saveEdit(f, e)}>
+                      <input
+                        aria-label={editing.mode === "rename" ? "New name" : "New folder"}
+                        value={editing.value}
+                        onChange={(e) => setEditing({ ...editing, value: e.target.value })}
+                        autoFocus
+                        required
+                      />
+                      <button>Save</button>
+                      <button type="button" className="link" onClick={() => setEditing(null)}>Cancel</button>
+                      {editError && <span role="alert" className="error">{editError}</span>}
+                    </form>
+                  </td>
+                ) : (
+                  <>
+                    <td>{f.name}</td>
+                    <td>{formatSize(f.size)}</td>
+                    <td>{new Date(f.created_at).toLocaleString()}</td>
+                    <td className="actions">
+                      <button onClick={() => onDownload(f)}>Download</button>
+                      <button className="link" onClick={() => startEdit(f, "rename")}>Rename</button>
+                      <button className="link" onClick={() => startEdit(f, "move")}>Move</button>
+                      <button className="link danger" onClick={() => onDelete(f)}>Delete</button>
+                    </td>
+                  </>
+                )}
               </tr>
             ))}
             {listing.folders.length === 0 && listing.files.length === 0 && (
               <tr><td colSpan={4} className="empty">This folder is empty.</td></tr>
             )}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}
+
+function Trash() {
+  const [items, setItems] = useState<TrashedItem[] | null>(null);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      setItems(await listTrash());
+    } catch (e) {
+      setError(errorText(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function onRestore(item: TrashedItem) {
+    setError("");
+    setNotice("");
+    try {
+      const back = await restoreFile(item.id);
+      setNotice(`Restored ${back.name} to ${back.folder}`);
+      await load();
+    } catch (e) {
+      // A reused name is a 409: the file stays in Trash and can be restored once the name is free.
+      setError(`${item.name} was not restored: ${errorText(e)}`);
+    }
+  }
+
+  return (
+    <section>
+      <p>
+        <small>Deleted files stay here until they are purged. Restoring puts a file back in its original folder.</small>
+      </p>
+      {notice && <p role="status" className="ok">{notice}</p>}
+      {error && <p role="alert" className="error">{error}</p>}
+      {items && (
+        <table>
+          <thead>
+            <tr><th>Name</th><th>Folder</th><th>Size</th><th>Deleted</th><th /></tr>
+          </thead>
+          <tbody>
+            {items.map((t) => (
+              <tr key={t.id}>
+                <td>{t.name}</td>
+                <td>{t.folder}</td>
+                <td>{formatSize(t.size)}</td>
+                <td>{new Date(t.trashed_at).toLocaleString()}</td>
+                <td className="actions"><button onClick={() => onRestore(t)}>Restore</button></td>
+              </tr>
+            ))}
+            {items.length === 0 && <tr><td colSpan={5} className="empty">Trash is empty.</td></tr>}
           </tbody>
         </table>
       )}

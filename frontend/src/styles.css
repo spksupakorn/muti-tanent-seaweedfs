@@ -23,3 +23,10 @@ th, td { text-align: left; padding: .5rem; border-bottom: 1px solid #e5e9ee; }
 td.empty { color: #66717d; text-align: center; padding: 1.5rem; }
 .error { color: #b42318; }
 .ok { color: #067647; }
+.tabs { display: flex; gap: .25rem; margin: 1rem 0 0; border-bottom: 1px solid #e5e9ee; }
+.tab { background: none; color: #1c2430; border-radius: 4px 4px 0 0; border-bottom: 2px solid transparent; }
+.tab.on { border-bottom-color: #2563eb; color: #2563eb; font-weight: 600; }
+td.actions { white-space: nowrap; display: flex; gap: .6rem; align-items: center; justify-content: flex-end; }
+button.danger { color: #b42318; }
+form.inline { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+form.inline input { flex: 1; min-width: 12rem; }
