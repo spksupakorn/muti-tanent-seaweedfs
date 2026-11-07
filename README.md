@@ -31,6 +31,7 @@ All need a bearer token (`POST /api/auth/login`) and, except for the tenant list
 | `PATCH /api/files/{id}` | rename and/or move (`name`, `folder`) |
 | `DELETE /api/files/{id}` | move to Trash |
 | `GET /api/trash`, `POST /api/trash/{id}/restore` | list Trash; restore (409 if the name was reused) |
+| `GET /api/audit?limit=&offset=` | audit log; organization admins only |
 
 ## Database roles
 

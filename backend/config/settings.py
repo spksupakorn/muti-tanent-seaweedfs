@@ -15,6 +15,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "accounts",
     "files",
+    "audit",
 ]
 
 AUTH_USER_MODEL = "accounts.User"

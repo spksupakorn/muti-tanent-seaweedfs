@@ -5,6 +5,7 @@ from django.db import connection
 from ninja import NinjaAPI
 
 from accounts.api import router as accounts_router
+from audit.api import router as audit_router
 from files.api import router as files_router
 from storage import client
 
@@ -13,6 +14,7 @@ log = logging.getLogger(__name__)
 api = NinjaAPI(title="File storage API")
 api.add_router("", accounts_router)
 api.add_router("", files_router)
+api.add_router("", audit_router)
 
 
 @api.get("/health")

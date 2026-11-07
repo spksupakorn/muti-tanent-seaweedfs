@@ -16,6 +16,7 @@ from ninja.errors import HttpError
 
 from accounts import rls
 from accounts.auth import TenantAuth
+from audit.records import record as audit_record
 from storage import client as storage
 
 from . import crypto
@@ -145,6 +146,8 @@ def upload(
         storage.put_stream(record.object_key, crypto.EncryptingReader(file, data_key))
         with rls.scope(request, DIRECT):
             File.objects.using(DIRECT).filter(id=file_id).update(status=File.Status.ACTIVE, size=file.size)
+            # Same transaction as the activation: an upload counts as done only together with its entry.
+            audit_record(request, "upload", record, using=DIRECT)
     except IntegrityError:  # another upload took the name between the check above and now
         log.warning("upload %s lost the race for its name; discarding", file_id)
         _discard(request, record)
@@ -167,12 +170,17 @@ def update_file(request, file_id: UUID, data: UpdateIn):
     folder = normalize_folder(data.folder) if data.folder is not None else record.folder
     if (name, folder) == (record.name, record.folder):
         return record
+    renamed, moved = name != record.name, folder != record.folder
     record.name, record.folder = name, folder
     try:
         with transaction.atomic():  # a savepoint, so a conflict does not poison the request transaction
             record.save(update_fields=["name", "folder"])
     except IntegrityError:
         raise HttpError(409, NAME_TAKEN)
+    if renamed:
+        audit_record(request, "rename", record)
+    if moved:
+        audit_record(request, "move", record)
     return record
 
 
@@ -182,6 +190,7 @@ def trash_file(request, file_id: UUID):
     record = get_object_or_404(File, id=file_id, tenant=request.tenant, status=File.Status.ACTIVE)
     record.status, record.trashed_at = File.Status.TRASHED, timezone.now()
     record.save(update_fields=["status", "trashed_at"])
+    audit_record(request, "delete", record)
     return 204, None
 
 
@@ -200,6 +209,7 @@ def restore_file(request, file_id: UUID):
             record.save(update_fields=["status", "trashed_at"])
     except IntegrityError:
         raise HttpError(409, NAME_TAKEN)
+    audit_record(request, "restore", record)
     return record
 
 
@@ -228,6 +238,8 @@ def download(request, file_id: UUID):
     except (crypto.IntegrityError, ClientError):
         log.exception("file %s failed to load", record.id)
         raise HttpError(500, "Stored file failed its integrity check or is missing")
+    # shortcut: recorded once the first segment decrypts; a failure later in the stream is not undone here.
+    audit_record(request, "download", record)
     # The response is built from memory only; the request transaction ends before streaming starts.
     response = StreamingHttpResponse(itertools.chain([first], segments), content_type="application/octet-stream")
     response["Content-Length"] = record.size
