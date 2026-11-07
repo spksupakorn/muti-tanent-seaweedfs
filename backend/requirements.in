@@ -6,3 +6,4 @@ gunicorn
 pyjwt
 django-cors-headers
 cryptography
+whitenoise

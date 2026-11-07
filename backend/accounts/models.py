@@ -28,6 +28,8 @@ class User(AbstractBaseUser):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     email = models.EmailField(unique=True)
     is_active = models.BooleanField(default=True)
+    # A Platform operator may sign in to the back office (Django admin) and, there, do everything it offers.
+    is_operator = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     USERNAME_FIELD = "email"
@@ -35,6 +37,21 @@ class User(AbstractBaseUser):
 
     def __str__(self):
         return self.email
+
+    # The names Django admin looks for. No fine-grained permissions: an operator can use every admin page.
+    @property
+    def is_staff(self) -> bool:
+        return self.is_active and self.is_operator
+
+    @property
+    def is_superuser(self) -> bool:
+        return self.is_staff
+
+    def has_perm(self, perm, obj=None) -> bool:
+        return self.is_staff
+
+    def has_module_perms(self, app_label) -> bool:
+        return self.is_staff
 
 
 class Membership(models.Model):

@@ -41,6 +41,8 @@ docker compose up -d --build --wait >/dev/null
 TID=$(ops create_tenant "$TENANT")
 ops create_user "$EMAIL" "$PW" >/dev/null
 ops add_membership "$EMAIL" "$TENANT" admin >/dev/null
+OP_EMAIL="operator-$sfx@example.com"
+ops create_user --operator "$OP_EMAIL" "$PW" >/dev/null   # a Platform operator, for the back office check below
 TOK=$(login)
 
 printf 'hello from the drill\n' > "$WORK/small.txt"
@@ -127,6 +129,17 @@ ok "4 files identical to the originals, including the one deleted from storage a
 curl -sf "$API/trash" -H "Authorization: Bearer $TOK" -H "X-Tenant-ID: $TID" \
   | jq -e --arg id "$(idof trashed.txt)" 'map(.id) | index($id) != null' >/dev/null || die "the trashed file is not in Trash"
 ok "the file in Trash is still in Trash"
+
+step "the back office works on the restored database (sessions, admin tables, a cross-tenant view under RLS)"
+BO=http://127.0.0.1:8001
+jar="$WORK/backoffice.jar"
+csrf=$(curl -sc "$jar" "$BO/admin/login/" | grep -o 'name="csrfmiddlewaretoken" value="[^"]*"' | sed 's/.*value="//; s/"$//')
+code=$(curl -sb "$jar" -c "$jar" -o /dev/null -w '%{http_code}' -H "Referer: $BO/admin/login/" \
+  --data-urlencode "username=$OP_EMAIL" --data-urlencode "password=$PW" --data-urlencode "csrfmiddlewaretoken=$csrf" -d "next=/admin/" "$BO/admin/login/")
+[ "$code" = 302 ] || die "the operator could not sign in to the restored back office (HTTP $code)"
+page=$(curl -sb "$jar" "$BO/admin/files/file/?q=multi.bin")
+case "$page" in *multi.bin*"$TENANT"*|*"$TENANT"*multi.bin*) ;; *) die "the back office does not list the restored file" ;; esac
+ok "operator signed in and sees the restored file with its tenant"
 
 step "no restored record points at a missing file"
 docker compose run --rm -T ops check_file_objects

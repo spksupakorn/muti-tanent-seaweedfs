@@ -5,6 +5,7 @@ from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 from botocore.exceptions import ClientError
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 
 MIB = 1 << 20
 
@@ -14,6 +15,8 @@ _TRANSFER = TransferConfig(multipart_threshold=8 * MIB, multipart_chunksize=8 * 
 
 @lru_cache(maxsize=1)
 def _s3():
+    if not settings.S3_ACCESS_KEY:  # the back office is deliberately started without storage access
+        raise ImproperlyConfigured("This process has no S3 credentials")
     return boto3.client(
         "s3",
         endpoint_url=settings.S3_ENDPOINT_URL,

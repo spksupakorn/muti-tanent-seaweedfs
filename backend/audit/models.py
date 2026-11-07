@@ -25,6 +25,8 @@ class AuditEntry(models.Model):
     file_id = models.UUIDField(null=True)
     file_name = models.CharField(max_length=255)
     file_folder = models.CharField(max_length=1024)
+    # Done by a Platform operator in the back office, not by a member of the Tenant.
+    by_operator = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

@@ -102,6 +102,8 @@ services:
       <<: *backend-env
       POSTGRES_USER: filestore_owner
       POSTGRES_PASSWORD: ${DB_OWNER_PASSWORD:?set in .env}
+      # Migrates every app, including the admin's own tables, which only the back office uses.
+      DJANGO_SETTINGS_MODULE: config.backoffice_settings
     depends_on:
       postgres:
         condition: service_healthy
@@ -127,6 +129,31 @@ services:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 5s
+      timeout: 6s
+      retries: 20
+
+  # The back office for Platform operators: Django admin, as the back-office DB role. Its own secret key, and
+  # deliberately NO master key and NO S3 credentials: nothing here can read or decrypt a stored file.
+  # Create an operator with: docker compose run --rm ops create_user --operator you@example.com 'a-password'
+  backoffice:
+    build: ./backend
+    image: filestore-backend
+    environment:
+      DJANGO_SETTINGS_MODULE: config.backoffice_settings
+      DJANGO_SECRET_KEY: ${BACKOFFICE_SECRET_KEY:?set in .env}
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,backoffice
+      POSTGRES_DB: ${POSTGRES_DB:-filestore}
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: filestore_backoffice
+      POSTGRES_PASSWORD: ${DB_BACKOFFICE_PASSWORD:?set in .env}
+    ports:
+      - "127.0.0.1:8001:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/admin/login/', timeout=5)"]
       interval: 5s
       timeout: 6s
       retries: 20
@@ -246,6 +273,7 @@ services:
     environment:
       <<: *backend-env
       BACKEND_URL: http://backend:8000
+      BACKOFFICE_URL: http://backoffice:8000
       S3_ADMIN_ACCESS_KEY: ${S3_ADMIN_ACCESS_KEY:?set in .env}
       S3_ADMIN_SECRET_KEY: ${S3_ADMIN_SECRET_KEY:?set in .env}
       # Seeding runs the operator commands as the back-office role; RLS probes log in as each role.
@@ -258,6 +286,8 @@ services:
       - ./backend:/app:ro
     depends_on:
       backend:
+        condition: service_healthy
+      backoffice:
         condition: service_healthy
 
 secrets:

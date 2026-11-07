@@ -7,6 +7,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+# Static files for the back office's admin pages (only that service serves them).
+RUN DJANGO_SETTINGS_MODULE=config.backoffice_settings DJANGO_SECRET_KEY=build POSTGRES_DB=build \
+    POSTGRES_USER=build POSTGRES_PASSWORD=build python manage.py collectstatic --noinput
 RUN useradd --system --no-create-home app
 USER app
 

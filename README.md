@@ -11,7 +11,7 @@ docker compose up -d --build --wait
 curl http://127.0.0.1:8000/api/health
 ```
 
-Published on the host, loopback only: the React app (`127.0.0.1:5173`), the backend (`127.0.0.1:8000`) and the SeaweedFS admin UI (`127.0.0.1:12535`, user `admin`, password `SEAWEED_ADMIN_PASSWORD` from `.env`). Postgres, S3, filer and master stay inside the compose network.
+Published on the host, loopback only: the React app (`127.0.0.1:5173`), the backend (`127.0.0.1:8000`), the operators' back office (`127.0.0.1:8001`) and the SeaweedFS admin UI (`127.0.0.1:12535`, user `admin`, password `SEAWEED_ADMIN_PASSWORD` from `.env`). Postgres, S3, filer and master stay inside the compose network.
 
 Create a user and an organization first (see Operator commands), then sign in at http://127.0.0.1:5173.
 
@@ -45,11 +45,18 @@ Tenants, Users and Memberships are created by the Platform operator, not through
 ```sh
 docker compose run --rm ops create_tenant "Acme"
 docker compose run --rm ops create_user alice@example.com 'a-password'
+docker compose run --rm ops create_user --operator you@example.com 'a-password'   # a Platform operator: may sign in to the back office
 docker compose run --rm ops add_membership alice@example.com "Acme" admin   # admin | member
 docker compose run --rm ops destroy_tenant_key "Acme"    # its files become unreadable for good
 docker compose run --rm ops check_file_objects           # every file record has its stored object
 docker compose run --rm ops purge                         # see "Purge" below
 ```
+
+## Back office
+
+Platform operators use Django admin at http://127.0.0.1:8001/admin/ (loopback only). It is its own service: it connects to Postgres as `filestore_backoffice`, has its own secret key (`BACKOFFICE_SECRET_KEY`), and gets **neither the master key nor S3 credentials**, so nothing in it can read or decrypt a file. Only users created with `create_user --operator` (or with "is operator" set in the back office) can sign in.
+
+What an operator can do: see every organization's files (name, folder, owner, size, status), move any file to Trash and restore it (a restore is refused if the name was reused), create and edit organizations, users, memberships and roles, and read every organization's audit log. These actions appear in the organization's own audit log as "by the platform", without naming the operator. Files, organizations and users cannot be deleted from here; the file list is read-only.
 
 ## Purge
 

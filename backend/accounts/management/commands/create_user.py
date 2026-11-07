@@ -9,8 +9,13 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("email")
         parser.add_argument("password")
+        parser.add_argument("--operator", action="store_true", help="a Platform operator: may sign in to the back office")
 
-    def handle(self, *args, email, password, **opts):
+    def handle(self, *args, email, password, operator=False, **opts):
         if User.objects.filter(email=email.strip().lower()).exists():
             raise CommandError(f"User {email!r} already exists")
-        self.stdout.write(str(User.objects.create_user(email, password).id))
+        user = User.objects.create_user(email, password)
+        if operator:
+            user.is_operator = True
+            user.save(update_fields=["is_operator"])
+        self.stdout.write(str(user.id))

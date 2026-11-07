@@ -20,6 +20,7 @@ class AuditOut(Schema):
     file_name: str
     file_folder: str
     user_email: Optional[str]
+    by_operator: bool
     created_at: datetime
 
 
@@ -46,7 +47,9 @@ def list_audit(request, paging: Query[Paging]):
             file_id=e.file_id,
             file_name=e.file_name,
             file_folder=e.file_folder,
-            user_email=e.user.email if e.user else None,
+            # An operator is shown as "the platform", not by name, to the Tenant's admins.
+            user_email=e.user.email if e.user and not e.by_operator else None,
+            by_operator=e.by_operator,
             created_at=e.created_at,
         )
         for e in entries
