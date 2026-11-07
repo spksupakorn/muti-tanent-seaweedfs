@@ -1,6 +1,6 @@
 # Multi-tenant file storage (PoC)
 
-Django Ninja + Postgres + SeaweedFS, all on docker compose. See `CONTEXT.md` for terms and `docs/adr/` for decisions.
+Django Ninja + Postgres + SeaweedFS + a React app, all on docker compose. See `CONTEXT.md` for terms and `docs/adr/` for decisions.
 
 ## Run
 
@@ -11,8 +11,9 @@ docker compose up -d --build --wait
 curl http://127.0.0.1:8000/api/health
 ```
 
-Published on the host, loopback only: the backend (`127.0.0.1:8000`) and the SeaweedFS admin UI (`127.0.0.1:12535`, user `admin`, password `SEAWEED_ADMIN_PASSWORD` from `.env`). Postgres, S3, filer and master stay inside the compose network.
+Published on the host, loopback only: the React app (`127.0.0.1:5173`), the backend (`127.0.0.1:8000`) and the SeaweedFS admin UI (`127.0.0.1:12535`, user `admin`, password `SEAWEED_ADMIN_PASSWORD` from `.env`). Postgres, S3, filer and master stay inside the compose network.
 
+Create a user and an organization first (see Operator commands), then sign in at http://127.0.0.1:5173.
 
 ## Master key
 
@@ -67,4 +68,5 @@ A Backup lives in `./backups`: `files/` (the stored, still-encrypted files, copi
 ```sh
 ./scripts/test.sh          # black-box API tests inside the compose network + host port checks (needs uv)
 ./scripts/restore-drill.sh # backup and restore (destructive, see above)
+./scripts/e2e.sh           # the React app in a real browser (needs node and jq; downloads Chromium once)
 ```

@@ -1,0 +1,9 @@
+{
+  "name": "filestore-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Real-browser check of the React app against the running compose stack. Run it with ../../scripts/e2e.sh",
+  "dependencies": {
+    "playwright": "^1.65.0"
+  }
+}

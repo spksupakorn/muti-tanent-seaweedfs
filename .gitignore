@@ -11,3 +11,6 @@
 __pycache__/
 .pytest_cache/
 backups/
+frontend/dist/
+frontend/node_modules/
+node_modules/

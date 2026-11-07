@@ -131,6 +131,24 @@ services:
       timeout: 6s
       retries: 20
 
+  # The React app: static files from nginx. The browser calls the API at VITE_API_URL (baked in at build
+  # time), so the backend must allow this origin (CORS_ALLOWED_ORIGINS defaults to 127.0.0.1:5173 / localhost:5173).
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://127.0.0.1:8000}
+    ports:
+      - "127.0.0.1:5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   # Platform operator commands, as the back-office role (bypasses RLS on purpose):
   #   docker compose run --rm ops create_tenant "Acme"
   #   docker compose run --rm ops create_user alice@example.com 'a-password'
