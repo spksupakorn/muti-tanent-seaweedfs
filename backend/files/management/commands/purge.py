@@ -49,7 +49,7 @@ class Command(BaseCommand):
         if not root:
             return False  # no Backup configured: never delete the last copy
         copy = Path(root) / f.object_key
-        return copy.is_file() and copy.stat().st_size == crypto.stored_size(f.size)
+        return copy.is_file() and copy.stat().st_size == crypto.expected_stored_size(f.size)
 
     def _purge(self, file_id, status, still_matches) -> int:
         """Delete one file's object, then its record. Re-checks under a lock, so a file that was restored or

@@ -1,5 +1,16 @@
 name: filestore
 
+# Three networks, so a service can only reach what it needs. In particular the back office and the React app
+# are on no network with SeaweedFS (its filer and master take unauthenticated requests):
+#   db      Postgres and everything that talks to it
+#   storage SeaweedFS and everything that talks to it
+#   web     the HTTP services (the backend, the back office, the React app) and the test runner
+networks:
+  db:
+  storage:
+  web:
+
+# What the API (and the test runner) needs: the signing key for tokens and the storage credentials.
 x-backend-env: &backend-env
   DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set in .env}
   POSTGRES_DB: ${POSTGRES_DB:-filestore}
@@ -12,6 +23,7 @@ x-backend-env: &backend-env
 services:
   postgres:
     image: postgres:18-alpine
+    networks: [db]
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-filestore}
       POSTGRES_USER: ${POSTGRES_USER:-filestore}
@@ -30,9 +42,10 @@ services:
 
   # master + volume + filer + S3 in one process. The S3 identity file is rendered at start
   # because s3.json cannot read env vars. "backend" is limited to one bucket; "admin" exists
-  # only so the test suite can prove that limit holds.
+  # only so the test suite can prove that limit holds (shortcut: it is rendered in every deployment).
   seaweedfs:
     image: chrislusf/seaweedfs:4.52
+    networks: [storage]
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >-
@@ -60,6 +73,7 @@ services:
 
   storage-init:
     image: chrislusf/seaweedfs:4.52
+    networks: [storage]
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >-
@@ -77,6 +91,7 @@ services:
   # publishes it on 127.0.0.1.
   seaweedfs-admin:
     image: chrislusf/seaweedfs:4.52
+    networks: [storage]
     command: ["admin", "-master=seaweedfs:9333", "-dataDir=/data", "-port=12535"]
     environment:
       WEED_ADMIN_PASSWORD: ${SEAWEED_ADMIN_PASSWORD:?set in .env}
@@ -93,17 +108,20 @@ services:
       timeout: 3s
       retries: 30
 
-  # Schema changes run as the owner role, never as the API's role.
+  # Schema changes run as the owner role, never as the API's role. Neither the API's signing key nor
+  # storage credentials: it migrates every app, including the admin's own tables, only the back office uses.
   migrate:
     build: ./backend
     image: filestore-backend
+    networks: [db]
     command: ["python", "manage.py", "migrate", "--noinput"]
     environment:
-      <<: *backend-env
+      DJANGO_SETTINGS_MODULE: config.backoffice_settings
+      DJANGO_SECRET_KEY: ${BACKOFFICE_SECRET_KEY:?set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-filestore}
+      POSTGRES_HOST: postgres
       POSTGRES_USER: filestore_owner
       POSTGRES_PASSWORD: ${DB_OWNER_PASSWORD:?set in .env}
-      # Migrates every app, including the admin's own tables, which only the back office uses.
-      DJANGO_SETTINGS_MODULE: config.backoffice_settings
     depends_on:
       postgres:
         condition: service_healthy
@@ -112,6 +130,7 @@ services:
   backend:
     build: ./backend
     image: filestore-backend
+    networks: [db, storage, web]
     environment:
       <<: *backend-env
       POSTGRES_USER: filestore_app
@@ -134,11 +153,13 @@ services:
       retries: 20
 
   # The back office for Platform operators: Django admin, as the back-office DB role. Its own secret key, and
-  # deliberately NO master key and NO S3 credentials: nothing here can read or decrypt a stored file.
+  # deliberately NO master key, NO S3 credentials and NO network path to SeaweedFS: nothing here can read,
+  # decrypt, overwrite or delete a stored file.
   # Create an operator with: docker compose run --rm ops create_user --operator you@example.com 'a-password'
   backoffice:
     build: ./backend
     image: filestore-backend
+    networks: [db, web]
     environment:
       DJANGO_SETTINGS_MODULE: config.backoffice_settings
       DJANGO_SECRET_KEY: ${BACKOFFICE_SECRET_KEY:?set in .env}
@@ -165,6 +186,7 @@ services:
       context: ./frontend
       args:
         VITE_API_URL: ${VITE_API_URL:-http://127.0.0.1:8000}
+    networks: [web]
     ports:
       - "127.0.0.1:5173:80"
     depends_on:
@@ -181,13 +203,16 @@ services:
   #   docker compose run --rm ops create_user alice@example.com 'a-password'
   #   docker compose run --rm ops add_membership alice@example.com "Acme" admin
   #   docker compose run --rm ops purge        # half-finished uploads > 1 h, Trash > 7 days (needs the Backup, see below)
+  # It does not get the API's signing key: it signs no tokens.
   ops:
     profiles: ["ops"]
     build: ./backend
     image: filestore-backend
+    networks: [db, storage]
     entrypoint: ["python", "manage.py"]
     environment:
       <<: *backend-env
+      DJANGO_SECRET_KEY: ${BACKOFFICE_SECRET_KEY:?set in .env}
       POSTGRES_USER: filestore_backoffice
       POSTGRES_PASSWORD: ${DB_BACKOFFICE_PASSWORD:?set in .env}
       BACKUP_FILES_DIR: /backup/files
@@ -198,17 +223,41 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Runs `purge` every PURGE_INTERVAL seconds (default an hour): half-finished uploads older than an hour are
+  # removed, and Trash older than 7 days once the Backup holds a copy (so, without the backup profile, only the
+  # first). The first run comes one interval after start.
+  maintenance:
+    build: ./backend
+    image: filestore-backend
+    networks: [db, storage]
+    entrypoint: ["/bin/sh", "-c"]
+    command: ['while true; do sleep "$${PURGE_INTERVAL:-3600}"; python manage.py purge || echo "purge failed"; done']
+    environment:
+      <<: *backend-env
+      DJANGO_SECRET_KEY: ${BACKOFFICE_SECRET_KEY:?set in .env}
+      POSTGRES_USER: filestore_backoffice
+      POSTGRES_PASSWORD: ${DB_BACKOFFICE_PASSWORD:?set in .env}
+      BACKUP_FILES_DIR: /backup/files
+      PURGE_INTERVAL: ${PURGE_INTERVAL:-3600}
+    volumes:
+      - ${BACKUP_DIR:-./backups}/files:/backup/files:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   # Backup, part 1: continuously copy the stored (encrypted) files to ${BACKUP_DIR}/files.
   # No -doDeleteFiles: a file purged or lost later stays in the Backup. The health-check objects are skipped.
   # -initialSnapshot also seeds files that exist before it starts (e.g. right after a restore).
   filer-backup:
     profiles: ["backup"]  # off for normal runs and tests, which would otherwise copy every test file into ./backups
     image: chrislusf/seaweedfs:4.52
+    networks: [storage]
     command:
       - filer.backup
       - -filer=seaweedfs:8888
-      - -filerPath=/buckets/files
-      - -filerExcludePaths=/buckets/files/_health
+      - -filerPath=/buckets/${S3_BUCKET:-files}
+      - -filerExcludePaths=/buckets/${S3_BUCKET:-files}/_health
       - -initialSnapshot
     volumes:
       - ./backup/replication.toml:/etc/seaweedfs/replication.toml:ro
@@ -223,6 +272,7 @@ services:
   db-backup:
     profiles: ["backup"]
     image: postgres:18-alpine
+    networks: [db]
     entrypoint: ["/bin/sh", "/scripts/db-backup.sh"]
     environment:
       PGHOST: postgres
@@ -242,6 +292,7 @@ services:
   db-restore:
     profiles: ["restore"]
     image: postgres:18-alpine
+    networks: [db]
     entrypoint: ["/bin/sh", "/scripts/restore-db.sh"]
     environment:
       PGHOST: postgres
@@ -257,6 +308,7 @@ services:
   files-restore:
     profiles: ["restore"]
     image: chrislusf/seaweedfs:4.52
+    networks: [storage]
     entrypoint: ["/bin/sh", "-c"]
     command: ["weed filer.copy /backup/files/* http://seaweedfs:8888/buckets/$${S3_BUCKET}/"]
     environment:
@@ -264,12 +316,13 @@ services:
     volumes:
       - ${BACKUP_DIR:-./backups}/files:/backup/files:ro
 
-  # Runs inside the compose network: the S3 port is not published to the host.
+  # Runs inside the compose networks: the S3 port is not published to the host.
   tests:
     profiles: ["test"]
     build:
       context: .
       dockerfile: tests/Dockerfile
+    networks: [db, storage, web]
     environment:
       <<: *backend-env
       BACKEND_URL: http://backend:8000

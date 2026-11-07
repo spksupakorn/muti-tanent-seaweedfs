@@ -3,6 +3,7 @@
 # The dump comes first; only then do we wait for `filer.backup` to catch up, so the restored database
 # never points at a file the Backup lacks. Usage: db-backup.sh [once]   (default: loop forever)
 set -eu
+umask 077   # a dump holds every password hash and every wrapped key: owner-only, like the directory around it
 DIR=${BACKUP_DIR:-/backup}
 TIMEOUT=${BACKUP_CATCHUP_TIMEOUT:-600}
 INTERVAL=${BACKUP_INTERVAL:-3600}

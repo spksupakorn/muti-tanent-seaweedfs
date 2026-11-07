@@ -57,3 +57,26 @@ def test_the_back_office_is_published_on_loopback_only():
         pytest.skip("host has no non-loopback address")
     with pytest.raises(OSError):
         socket.create_connection((lan_ip, 8001), timeout=2).close()
+
+
+def can_reach(service: str, host: str) -> bool:
+    """Whether `service` can open a connection to `host`'s filer port (8888) from inside its own network."""
+    code = f"import socket; socket.create_connection(('{host}', 8888), timeout=3)"
+    return subprocess.run(
+        ["docker", "compose", "exec", "-T", service, "python", "-c", code], cwd=ROOT, capture_output=True
+    ).returncode == 0
+
+
+def test_the_back_office_cannot_reach_storage_but_the_api_can():
+    # SeaweedFS's filer takes unauthenticated requests, so the back office (no S3 credentials, no master key)
+    # must not even have a network path to it.
+    assert can_reach("backend", "seaweedfs"), "control: the API must reach storage"
+    assert not can_reach("backoffice", "seaweedfs"), "the back office can reach SeaweedFS"
+
+
+def test_the_frontend_is_on_no_network_with_storage_or_the_database():
+    out = subprocess.run(
+        ["docker", "inspect", "-f", "{{range $n, $_ := .NetworkSettings.Networks}}{{$n}} {{end}}", "filestore-frontend-1"],
+        capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert out == ["filestore_web"]

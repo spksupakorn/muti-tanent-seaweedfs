@@ -1,7 +1,12 @@
 from django import forms
 from django.contrib import admin
 
+from audit.models import AuditEntry
+from audit.records import record_operator_event
+
 from .models import Membership, Tenant, User
+
+Action = AuditEntry.Action
 
 
 @admin.register(Tenant)
@@ -51,6 +56,13 @@ class UserAdmin(admin.ModelAdmin):
     list_filter = ("is_active", "is_operator")
     search_fields = ("email",)
 
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        # An operator who sets a password can sign in as that User, so every Tenant the User belongs to is told.
+        if change and form.cleaned_data.get("password"):
+            for membership in obj.memberships.select_related("tenant"):
+                record_operator_event(membership.tenant, Action.PASSWORD_RESET, obj.email, request.user)
+
     # Deactivate instead: deleting would also remove the user's Memberships.
     def has_delete_permission(self, request, obj=None):
         return False
@@ -62,3 +74,17 @@ class MembershipAdmin(admin.ModelAdmin):
     list_filter = ("role", "tenant")
     search_fields = ("user__email", "tenant__name")
     autocomplete_fields = ("user", "tenant")
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        action = Action.MEMBER_CHANGED if change else Action.MEMBER_ADDED
+        record_operator_event(obj.tenant, action, f"{obj.user.email} as {obj.role}", request.user)
+
+    def delete_model(self, request, obj):
+        record_operator_event(obj.tenant, Action.MEMBER_REMOVED, obj.user.email, request.user)
+        super().delete_model(request, obj)
+
+    def delete_queryset(self, request, queryset):  # the "delete selected" action
+        for membership in queryset.select_related("tenant", "user"):
+            record_operator_event(membership.tenant, Action.MEMBER_REMOVED, membership.user.email, request.user)
+        super().delete_queryset(request, queryset)

@@ -2,6 +2,8 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from accounts.models import Tenant
+from audit.models import AuditEntry
+from audit.records import record_operator_event
 from files.models import TenantKey
 
 
@@ -20,4 +22,5 @@ class Command(BaseCommand):
         TenantKey.objects.update_or_create(
             tenant=tenant_obj, defaults={"wrapped_key": None, "destroyed_at": timezone.now()}
         )
+        record_operator_event(tenant_obj, AuditEntry.Action.KEY_DESTROYED)
         self.stdout.write("destroyed")

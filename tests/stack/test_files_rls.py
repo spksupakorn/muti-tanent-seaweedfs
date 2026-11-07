@@ -10,22 +10,6 @@ from django.db.utils import ProgrammingError
 from files.models import File
 
 
-def connect(role, password):
-    return psycopg.connect(
-        host=os.environ["POSTGRES_HOST"], dbname=os.environ["POSTGRES_DB"], user=role, password=password
-    )
-
-
-@pytest.fixture
-def app():
-    conn = connect("filestore_app", os.environ["DB_APP_PASSWORD"])
-    try:
-        yield conn
-    finally:
-        conn.rollback()  # psycopg's `with` would COMMIT: a test that wrongly succeeds must not leave its change behind
-        conn.close()
-
-
 @pytest.fixture
 def two_tenants_with_files(world):
     for key in ("a", "b"):

@@ -55,7 +55,7 @@ def delete(key: str) -> None:
     _s3().delete_object(Bucket=settings.S3_BUCKET, Key=key)
 
 
-def stored_size(key: str):
+def object_size(key: str):
     """Size in bytes of a stored object, or None if it does not exist."""
     try:
         return _s3().head_object(Bucket=settings.S3_BUCKET, Key=key)["ContentLength"]

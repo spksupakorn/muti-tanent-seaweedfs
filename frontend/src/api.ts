@@ -7,12 +7,15 @@ export type Listing = { folder: string; folders: string[]; files: FileItem[] };
 export type TrashedItem = FileItem & { trashed_at: string };
 export type AuditEntry = {
   id: string;
-  action: "upload" | "download" | "rename" | "move" | "delete" | "restore";
+  action:
+    | "upload" | "download" | "rename" | "move" | "delete" | "restore"
+    | "key_destroyed" | "member_added" | "member_changed" | "member_removed" | "password_reset";
   file_id: string | null;
   file_name: string;
   file_folder: string;
   user_email: string | null;
   by_operator: boolean;
+  detail: string;
   created_at: string;
 };
 
@@ -39,12 +42,11 @@ export const setTenantId = (id: string) => localStorage.setItem(TENANT, id);
 let onSignedOut: () => void = () => {};
 export const whenSignedOut = (fn: () => void) => (onSignedOut = fn);
 
-function signOut() {
+export function logout() {
   localStorage.removeItem(TOKENS);
   localStorage.removeItem(TENANT);
   onSignedOut();
 }
-export const logout = signOut;
 
 async function errorOf(res: Response): Promise<ApiError> {
   let message = `Request failed (${res.status})`;
@@ -100,19 +102,22 @@ function authHeaders(): Record<string, string> {
   return headers;
 }
 
-/** A request with the bearer token and tenant. On a 401 it refreshes once and retries; if that fails it signs out. */
-async function authed(path: string, init: RequestInit = {}): Promise<Response> {
-  const send = () => fetch(`${API}${path}`, { ...init, headers: { ...init.headers, ...authHeaders() } });
-  let res = await send();
-  if (res.status === 401) {
-    if (await refresh()) res = await send();
-    if (res.status === 401) {
-      signOut();
+/** Run a request; on a 401 refresh the session once and run it again. Still 401: the user is signed out. */
+async function withSessionRetry<T extends { status: number }>(attempt: () => Promise<T>): Promise<T> {
+  let result = await attempt();
+  if (result.status === 401) {
+    if (await refresh()) result = await attempt();
+    if (result.status === 401) {
+      logout();
       throw new ApiError(401, "Your session expired. Please sign in again.");
     }
   }
-  return res;
+  return result;
 }
+
+/** A request with the bearer token and tenant. */
+const authed = (path: string, init: RequestInit = {}): Promise<Response> =>
+  withSessionRetry(() => fetch(`${API}${path}`, { ...init, headers: { ...init.headers, ...authHeaders() } }));
 
 async function json<T>(path: string): Promise<T> {
   const res = await authed(path);
@@ -138,31 +143,23 @@ export async function download(file: FileItem): Promise<void> {
 export async function upload(file: File, folder: string, onProgress: (fraction: number) => void): Promise<FileItem> {
   if (file.size > MAX_UPLOAD_BYTES) throw new ApiError(413, "File is larger than the 100 MB limit");
 
-  const attempt = () =>
-    new Promise<{ status: number; body: string }>((resolve, reject) => {
-      const form = new FormData();
-      form.append("file", file);
-      form.append("folder", folder);
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", `${API}/api/files`);
-      for (const [k, v] of Object.entries(authHeaders())) xhr.setRequestHeader(k, v);
-      xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
-      xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
-      xhr.onerror = () => reject(new ApiError(0, "Could not reach the server"));
-      xhr.send(form);
-    });
+  const attempt = () => {
+    onProgress(0);
+    const { promise, resolve, reject } = Promise.withResolvers<{ status: number; body: string }>();
+    const form = new FormData();
+    form.append("file", file);
+    form.append("folder", folder);
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API}/api/files`);
+    for (const [k, v] of Object.entries(authHeaders())) xhr.setRequestHeader(k, v);
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+    xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
+    xhr.onerror = () => reject(new ApiError(0, "Could not reach the server"));
+    xhr.send(form);
+    return promise;
+  };
 
-  let result = await attempt();
-  if (result.status === 401) {
-    if (await refresh()) {
-      onProgress(0);
-      result = await attempt();
-    }
-    if (result.status === 401) {
-      signOut();
-      throw new ApiError(401, "Your session expired. Please sign in again.");
-    }
-  }
+  const result = await withSessionRetry(attempt);
   if (result.status !== 200) {
     let message = `Upload failed (${result.status})`;
     try {

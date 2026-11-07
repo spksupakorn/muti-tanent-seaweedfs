@@ -257,3 +257,18 @@ def test_tenants_have_different_keys_so_ciphertext_does_not_transplant(
     assert blob_a != blob_b
     overwrite(admin_s3, bucket, world.tenants["b"], fb, blob_a)
     assert download(backend_url, b_headers, fb).status_code == 500
+
+
+@pytest.mark.parametrize("name", ["line\nbreak.txt", "carriage\rreturn.txt", "tab\there.txt", "bell\x07.txt", "del\x7f.txt"])
+def test_control_characters_in_a_name_are_rejected_instead_of_breaking_the_download(backend_url, a_headers, name):
+    r = httpx.post(
+        f"{backend_url}/api/files",
+        headers=a_headers,
+        files={"file": ("ok.bin", b"x", "application/octet-stream")},
+        data={"name": name},
+    )
+    assert r.status_code == 422
+
+
+def test_control_characters_in_a_folder_are_rejected(backend_url, a_headers):
+    assert upload(backend_url, a_headers, b"x", folder="/ok/new\nline").status_code == 422

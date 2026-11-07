@@ -293,3 +293,60 @@ def test_the_back_office_role_sees_across_tenants_while_the_api_role_sees_nothin
         api.rollback()
         back.close()
         api.close()
+
+
+# --- an operator can take over an account, so every such change shows in the Tenant's own audit log ---
+
+
+def _events(headers, *actions):
+    return [e for e in api_audit(headers) if e["action"] in actions]
+
+
+def test_membership_changes_by_an_operator_are_visible_to_the_tenants_admin(admin, world):
+    alice_a = auth_headers(world, "alice", "a")  # an admin of Tenant A
+    email = f"joiner-{uuid.uuid4().hex[:8]}@example.com"
+    ops("create_user", email, "pw-joiner")
+    user = User.objects.get(email=email)
+    before = len(_events(alice_a, "member_added", "member_changed", "member_removed"))
+
+    assert admin.post("/admin/accounts/membership/add/", {"user": str(user.id), "tenant": world.tenants["a"], "role": "member", "_save": "Save"}).status_code == 302
+    m = Membership.objects.get(user=user, tenant_id=world.tenants["a"])
+    assert admin.post(f"/admin/accounts/membership/{m.id}/change/", {"user": str(user.id), "tenant": world.tenants["a"], "role": "admin", "_save": "Save"}).status_code == 302
+    assert admin.post(f"/admin/accounts/membership/{m.id}/delete/", {"post": "yes"}).status_code == 302
+
+    seen = [e for e in _events(alice_a, "member_added", "member_changed", "member_removed") if email in e["detail"]]
+    assert len(_events(alice_a, "member_added", "member_changed", "member_removed")) == before + 3
+    assert [(e["action"], e["detail"]) for e in reversed(seen)] == [
+        ("member_added", f"{email} as member"),
+        ("member_changed", f"{email} as admin"),
+        ("member_removed", email),
+    ]
+    assert all(e["by_operator"] and e["user_email"] is None for e in seen)  # the platform, not a named operator
+
+
+def test_an_operator_resetting_a_password_tells_every_tenant_the_user_belongs_to(admin, world):
+    w = new_world()
+    alice_a, carol_b = auth_headers(w, "alice", "a"), auth_headers(w, "carol", "b")  # admins of A and B
+    carol = User.objects.get(email=w.emails["carol"])  # carol belongs to A (member) and B (admin)
+
+    admin.post(f"/admin/accounts/user/{carol.id}/change/", {"email": carol.email, "password": "new-secret", "is_active": "on", "_save": "Save"})
+
+    for headers in (alice_a, carol_b):
+        resets = _events(headers, "password_reset")
+        assert [(e["detail"], e["by_operator"], e["user_email"]) for e in resets] == [(carol.email, True, None)]
+
+    # Saving the form without a new password changes no credentials, so it is not reported.
+    admin.post(f"/admin/accounts/user/{carol.id}/change/", {"email": carol.email, "is_active": "on", "_save": "Save"})
+    assert len(_events(alice_a, "password_reset")) == 1
+
+
+def test_destroying_a_tenant_key_is_recorded_for_the_tenant():
+    w = new_world()
+    alice_a = auth_headers(w, "alice", "a")
+    ops("destroy_tenant_key", w.names["a"])
+    entry = _events(alice_a, "key_destroyed")
+    assert [(e["by_operator"], e["user_email"], e["file_id"]) for e in entry] == [(True, None, None)]
+
+
+def test_back_office_pages_refuse_to_be_framed(admin):
+    assert admin.http.get("/admin/").headers["x-frame-options"] == "DENY"

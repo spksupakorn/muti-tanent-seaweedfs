@@ -11,7 +11,7 @@ docker compose up -d --build --wait
 curl http://127.0.0.1:8000/api/health
 ```
 
-Published on the host, loopback only: the React app (`127.0.0.1:5173`), the backend (`127.0.0.1:8000`), the operators' back office (`127.0.0.1:8001`) and the SeaweedFS admin UI (`127.0.0.1:12535`, user `admin`, password `SEAWEED_ADMIN_PASSWORD` from `.env`). Postgres, S3, filer and master stay inside the compose network.
+Published on the host, loopback only: the React app (`127.0.0.1:5173`), the backend (`127.0.0.1:8000`), the operators' back office (`127.0.0.1:8001`) and the SeaweedFS admin UI (`127.0.0.1:12535`, user `admin`, password `SEAWEED_ADMIN_PASSWORD` from `.env`). Postgres, S3, filer and master stay inside the compose networks. There are three (`db`, `storage`, `web`), so the back office and the React app have no network path to SeaweedFS, whose filer takes unauthenticated requests.
 
 Create a user and an organization first (see Operator commands), then sign in at http://127.0.0.1:5173.
 
@@ -56,11 +56,15 @@ docker compose run --rm ops purge                         # see "Purge" below
 
 Platform operators use Django admin at http://127.0.0.1:8001/admin/ (loopback only). It is its own service: it connects to Postgres as `filestore_backoffice`, has its own secret key (`BACKOFFICE_SECRET_KEY`), and gets **neither the master key nor S3 credentials**, so nothing in it can read or decrypt a file. Only users created with `create_user --operator` (or with "is operator" set in the back office) can sign in.
 
-What an operator can do: see every organization's files (name, folder, owner, size, status), move any file to Trash and restore it (a restore is refused if the name was reused), create and edit organizations, users, memberships and roles, and read every organization's audit log. These actions appear in the organization's own audit log as "by the platform", without naming the operator. Files, organizations and users cannot be deleted from here; the file list is read-only.
+What an operator can do: see every organization's files (name, folder, size, status), move any file to Trash and restore it (a restore is refused if the name was reused), create and edit organizations, users, memberships and roles, and read every organization's audit log. Files, organizations and users cannot be deleted from here; the file list is read-only.
+
+An operator can reset any user's password or add themselves to an organization, and then sign in to the app as that user and read the files. That cannot be prevented while operators manage users, so it is made visible instead: every file action, membership change, password reset and key destruction by an operator appears in the organization's own audit log as "Platform operator" (without naming the person; the back office's own admin log does name them).
 
 ## Purge
 
-`ops purge` removes half-finished uploads older than 1 hour (record and stored object) and Trash older than 7 days (record and stored object). Run it whenever you like; it is safe to repeat. It deletes a trashed file's stored object only when the Backup already holds a complete copy of it (same key, full size), so with the Backup off, or while it is behind, expired Trash simply stays until a later run. Options: `--tenant NAME`, `--pending-hours`, `--trash-days`.
+`ops purge` removes half-finished uploads older than 1 hour (record and stored object) and Trash older than 7 days (record and stored object). It is safe to repeat. It deletes a trashed file's stored object only when the Backup already holds a complete copy of it (same key, full size), so with the Backup off, or while it is behind, expired Trash simply stays until a later run. Options: `--tenant NAME`, `--pending-hours`, `--trash-days`.
+
+The `maintenance` service runs it every `PURGE_INTERVAL` seconds (default 3600; the first run comes one interval after start). With the `backup` profile off that only cleans half-finished uploads.
 
 ## Backup and restore
 
@@ -91,3 +95,13 @@ A Backup lives in `./backups`: `files/` (the stored, still-encrypted files, copi
 It also breaks RLS, encryption and tenant access on purpose and requires its own checks to notice, so a green run is not an accident, and each "found nothing" has a positive control. `SMOKE_SKIP_DRILL=1` skips the destructive last step for a quick run (about 40 seconds).
 
 Two things learned about SeaweedFS while building it: it compresses compressible data on its volumes, and busybox `grep` in regex mode cannot search binary data. Searching volume files for plaintext therefore needs incompressible test data and `grep -F`.
+
+## Known limits (a local proof of concept)
+
+- No TLS; everything is on loopback. Tokens are kept in the browser's `localStorage`; refresh tokens cannot be revoked.
+- No login throttling, on the API or the back office.
+- `GET /api/health` is unauthenticated and does an S3 write, read and delete per call (it doubles as the container healthcheck).
+- The SeaweedFS S3 `admin` identity exists in every deployment although only the tests use it.
+- An upload larger than 100 MB is spooled to disk before the API refuses it (only signed-in tenant members get that far); the React app refuses it before sending.
+- A download whose later segment fails its integrity check is cut off mid-stream (the first segment is checked before the response starts); it is still recorded in the audit log.
+- `./backups` holds a plaintext database dump (every password hash and every wrapped Tenant key; useless without the master key). It is created owner-only; keep it that way.

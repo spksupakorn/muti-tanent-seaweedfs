@@ -19,8 +19,8 @@ TAG = 16
 BLOCK = SEGMENT + TAG
 
 
-class IntegrityError(Exception):
-    """Stored bytes do not authenticate: tampered, truncated, reordered, or wrong key."""
+class CannotDecrypt(Exception):
+    """Stored bytes cannot be turned back into the file: tampered, truncated, reordered, or a wrong or missing key."""
 
 
 def _wrap(kek: bytes, key: bytes, aad: bytes) -> bytes:
@@ -32,7 +32,7 @@ def _unwrap(kek: bytes, blob: bytes, aad: bytes) -> bytes:
     try:
         return AESGCM(kek).decrypt(blob[:12], blob[12:], aad)
     except InvalidTag as e:
-        raise IntegrityError("key does not authenticate") from e
+        raise CannotDecrypt("key does not authenticate") from e
 
 
 def _master() -> bytes:
@@ -59,8 +59,8 @@ def unwrap_data_key(tenant_key: bytes, file_id, wrapped: bytes) -> bytes:
     return _unwrap(tenant_key, wrapped, b"data-key:" + file_id.bytes)
 
 
-def stored_size(plain_size: int) -> int:
-    """Bytes a File occupies in storage: its content plus one tag per segment (an empty file is one segment)."""
+def expected_stored_size(plain_size: int) -> int:
+    """Bytes a File should occupy in storage: its content plus one tag per segment (an empty file is one segment)."""
     return plain_size + TAG * max(1, -(-plain_size // SEGMENT))
 
 
@@ -129,12 +129,12 @@ def _blocks(chunks: Iterable[bytes]) -> Iterator[bytes]:
 
 
 def decrypt_stream(chunks: Iterable[bytes], key: bytes) -> Iterator[bytes]:
-    """Yield plaintext segments. Raises IntegrityError on any alteration, before yielding that segment."""
+    """Yield plaintext segments. Raises CannotDecrypt on any alteration, before yielding that segment."""
     aead = AESGCM(key)
     blocks = _blocks(chunks)
     current = next(blocks, None)
     if current is None:
-        raise IntegrityError("stored object is empty")
+        raise CannotDecrypt("stored object is empty")
     index = 0
     try:
         for following in blocks:
@@ -142,4 +142,4 @@ def decrypt_stream(chunks: Iterable[bytes], key: bytes) -> Iterator[bytes]:
             current, index = following, index + 1
         yield aead.decrypt(_nonce(index), current, _aad(True))
     except InvalidTag as e:
-        raise IntegrityError(f"segment {index} does not authenticate") from e
+        raise CannotDecrypt(f"segment {index} does not authenticate") from e

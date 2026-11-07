@@ -8,7 +8,6 @@ from botocore.exceptions import ClientError
 from django.db import IntegrityError, transaction
 from django.http import StreamingHttpResponse
 from django.shortcuts import get_object_or_404
-from django.utils import timezone
 from django.utils.http import content_disposition_header
 from ninja import File as FormFile
 from ninja import Form, Router, Schema, UploadedFile
@@ -16,14 +15,16 @@ from ninja.errors import HttpError
 
 from accounts import rls
 from accounts.auth import TenantAuth
+from audit.models import AuditEntry
 from audit.records import record as audit_record
 from storage import client as storage
 
 from . import crypto
-from .models import File, TenantKey
+from .models import File, NameTaken, TenantKey
 
 log = logging.getLogger(__name__)
 router = Router()
+Action = AuditEntry.Action
 
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 # A second connection, so the pending row commits before the body is written (see upload).
@@ -61,9 +62,14 @@ class TenantKeyDestroyed(Exception):
     pass
 
 
+def _has_control_character(text: str) -> bool:
+    """A newline in a name would break the download's Content-Disposition header; NUL and the rest are never wanted."""
+    return any(ord(c) < 32 or ord(c) == 127 for c in text)
+
+
 def normalize_folder(raw: str) -> str:
     parts = [p for p in raw.strip().split("/") if p]
-    if any(p in (".", "..") or len(p) > 255 or "\x00" in p or "\\" in p for p in parts):
+    if any(p in (".", "..") or len(p) > 255 or _has_control_character(p) or "\\" in p for p in parts):
         raise HttpError(422, "Invalid folder path")
     folder = "/" + "/".join(parts)
     if len(folder) > 1024:
@@ -73,7 +79,7 @@ def normalize_folder(raw: str) -> str:
 
 def normalize_name(raw: str) -> str:
     name = raw.strip()
-    if not name or name in (".", "..") or len(name) > 255 or any(c in name for c in "/\\\x00"):
+    if not name or name in (".", "..") or len(name) > 255 or _has_control_character(name) or any(c in name for c in "/\\"):
         raise HttpError(422, "Invalid file name")
     return name
 
@@ -89,7 +95,7 @@ def _tenant_key(tenant, using: str, create: bool) -> bytes:
         except IntegrityError:  # another first upload won the race
             row = TenantKey.objects.using(using).get(tenant=tenant)
     if row is None:
-        raise crypto.IntegrityError("tenant has Files but no key")
+        raise crypto.CannotDecrypt("tenant has Files but no key")
     if row.wrapped_key is None:
         raise TenantKeyDestroyed
     return crypto.unwrap_tenant_key(tenant.id, bytes(row.wrapped_key))
@@ -130,7 +136,7 @@ def upload(
         try:
             tenant_key = _tenant_key(tenant, DIRECT, create=True)
         except TenantKeyDestroyed:
-            raise HttpError(410, "This tenant's encryption key was destroyed")
+            raise HttpError(410, "This organization's Tenant key was destroyed")
         data_key, wrapped = crypto.new_data_key(tenant_key, file_id)
         record = File.objects.using(DIRECT).create(
             id=file_id,
@@ -147,7 +153,7 @@ def upload(
         with rls.scope(request, DIRECT):
             File.objects.using(DIRECT).filter(id=file_id).update(status=File.Status.ACTIVE, size=file.size)
             # Same transaction as the activation: an upload counts as done only together with its entry.
-            audit_record(request, "upload", record, using=DIRECT)
+            audit_record(request, Action.UPLOAD, record, using=DIRECT)
     except IntegrityError:  # another upload took the name between the check above and now
         log.warning("upload %s lost the race for its name; discarding", file_id)
         _discard(request, record)
@@ -178,9 +184,9 @@ def update_file(request, file_id: UUID, data: UpdateIn):
     except IntegrityError:
         raise HttpError(409, NAME_TAKEN)
     if renamed:
-        audit_record(request, "rename", record)
+        audit_record(request, Action.RENAME, record)
     if moved:
-        audit_record(request, "move", record)
+        audit_record(request, Action.MOVE, record)
     return record
 
 
@@ -188,9 +194,8 @@ def update_file(request, file_id: UUID, data: UpdateIn):
 def trash_file(request, file_id: UUID):
     """Soft delete: the record moves to Trash and the stored body stays where it is."""
     record = get_object_or_404(File, id=file_id, tenant=request.tenant, status=File.Status.ACTIVE)
-    record.status, record.trashed_at = File.Status.TRASHED, timezone.now()
-    record.save(update_fields=["status", "trashed_at"])
-    audit_record(request, "delete", record)
+    record.move_to_trash()
+    audit_record(request, Action.DELETE, record)
     return 204, None
 
 
@@ -203,13 +208,11 @@ def list_trash(request):
 def restore_file(request, file_id: UUID):
     """Back to the original Folder under its old name; refused if that name is taken meanwhile."""
     record = get_object_or_404(File, id=file_id, tenant=request.tenant, status=File.Status.TRASHED)
-    record.status, record.trashed_at = File.Status.ACTIVE, None
     try:
-        with transaction.atomic():  # a savepoint, so a conflict does not poison the request transaction
-            record.save(update_fields=["status", "trashed_at"])
-    except IntegrityError:
+        record.restore_from_trash()
+    except NameTaken:
         raise HttpError(409, NAME_TAKEN)
-    audit_record(request, "restore", record)
+    audit_record(request, Action.RESTORE, record)
     return record
 
 
@@ -234,12 +237,12 @@ def download(request, file_id: UUID):
         # Decrypt the first segment now so a bad small file fails with a status instead of a cut connection.
         first = next(segments)
     except TenantKeyDestroyed:
-        raise HttpError(410, "This tenant's encryption key was destroyed; its files can no longer be read")
-    except (crypto.IntegrityError, ClientError):
+        raise HttpError(410, "This organization's Tenant key was destroyed; its files can no longer be read")
+    except (crypto.CannotDecrypt, ClientError):
         log.exception("file %s failed to load", record.id)
         raise HttpError(500, "Stored file failed its integrity check or is missing")
     # shortcut: recorded once the first segment decrypts; a failure later in the stream is not undone here.
-    audit_record(request, "download", record)
+    audit_record(request, Action.DOWNLOAD, record)
     # The response is built from memory only; the request transaction ends before streaming starts.
     response = StreamingHttpResponse(itertools.chain([first], segments), content_type="application/octet-stream")
     response["Content-Length"] = record.size

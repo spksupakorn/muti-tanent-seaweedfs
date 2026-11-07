@@ -6,5 +6,5 @@ Files are encrypted in the backend (AES-256-GCM in 1 MiB segments, one data key 
 
 - SeaweedFS `-encryptVolumeData`: per-chunk keys held in the filer store; no per-tenant key.
 - SeaweedFS SSE-S3: one cluster-wide key.
-- SeaweedFS SSE-KMS with OpenBao: per-tenant keys, but adds a service and had unresolved bugs in 4.x.
+- SeaweedFS SSE-KMS with OpenBao: per-tenant keys, but adds a service (plus a non-dev OpenBao setup with its own unseal step), and 4.x had reported bugs with bucket-default KMS and large single-part uploads whose fixes were never verified against the pinned release.
 - SeaweedFS SSE-C: `filer.backup` cannot read these objects.

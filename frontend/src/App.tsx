@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ApiError,
   AuditEntry,
@@ -185,7 +185,6 @@ function Browser() {
   const [notice, setNotice] = useState("");
   const [editing, setEditing] = useState<Editing | null>(null);
   const [editError, setEditError] = useState("");
-  const input = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async (path: string) => {
     try {
@@ -279,7 +278,7 @@ function Browser() {
       </nav>
 
       <div className="upload">
-        <input ref={input} type="file" onChange={onPick} disabled={progress !== null} aria-label="Choose a file to upload" />
+        <input type="file" onChange={onPick} disabled={progress !== null} aria-label="Choose a file to upload" />
         {progress !== null && (
           <div className="progress" role="progressbar" aria-valuenow={Math.round(progress * 100)} aria-valuemin={0} aria-valuemax={100}>
             <div style={{ width: `${progress * 100}%` }} />
@@ -418,6 +417,11 @@ const ACTION_TEXT: Record<AuditEntry["action"], string> = {
   move: "Moved",
   delete: "Moved to Trash",
   restore: "Restored",
+  key_destroyed: "Tenant key destroyed: all files are now unreadable",
+  member_added: "Member added",
+  member_changed: "Member changed",
+  member_removed: "Member removed",
+  password_reset: "Password reset",
 };
 
 function Audit() {
@@ -457,7 +461,9 @@ function Audit() {
                 <td>{new Date(e.created_at).toLocaleString()}</td>
                 <td>{e.by_operator ? "Platform operator" : (e.user_email ?? "Deleted user")}</td>
                 <td>{ACTION_TEXT[e.action]}</td>
-                <td>{e.file_name} <small>{e.file_folder}</small></td>
+                <td>
+                  {e.file_name ? <>{e.file_name} <small>{e.file_folder}</small></> : (e.detail || "All files in this organization")}
+                </td>
               </tr>
             ))}
             {entries.length === 0 && <tr><td colSpan={4} className="empty">No activity yet.</td></tr>}

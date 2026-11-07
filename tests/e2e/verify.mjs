@@ -153,7 +153,7 @@ await tab("Trash").click();
 await row(/b\.txt/).waitFor();
 check("the deleted file is in Trash with its folder", (await row(/b\.txt/).innerText()).includes("/moved/here"));
 await row(/b\.txt/).getByRole("button", { name: "Restore" }).click();
-await page.getByText("Trash is empty.").waitFor().catch(() => {});
+await page.getByText("Trash is empty.").waitFor();
 check("restoring says where it went", (await page.getByRole("status").innerText()).includes("Restored b.txt to /moved/here"));
 await tab("Files").click();
 await crumbs().getByRole("button", { name: "All files" }).click();

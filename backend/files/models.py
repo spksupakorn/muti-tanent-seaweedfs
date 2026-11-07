@@ -1,6 +1,7 @@
 import uuid
 
-from django.db import models
+from django.db import IntegrityError, models, transaction
+from django.utils import timezone
 
 from accounts.models import Tenant
 
@@ -12,6 +13,10 @@ class TenantKey(models.Model):
     wrapped_key = models.BinaryField(null=True)  # NULL once destroyed
     destroyed_at = models.DateTimeField(null=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+class NameTaken(Exception):
+    """Another File already has this name in the Folder."""
 
 
 class File(models.Model):
@@ -33,7 +38,7 @@ class File(models.Model):
 
     class Meta:
         indexes = [models.Index(fields=["tenant", "folder"])]
-        # One active File per name in a Folder of a Tenant. Pending uploads and (later) Trash do not count.
+        # One active File per name in a Folder of a Tenant. Half-finished uploads and Files in Trash do not count.
         constraints = [
             models.UniqueConstraint(
                 fields=["tenant", "folder", "name"],
@@ -46,3 +51,17 @@ class File(models.Model):
     def object_key(self) -> str:
         # Ids only: no real file name ever reaches the storage layer.
         return f"{self.tenant_id}/{self.id}"
+
+    def move_to_trash(self) -> None:
+        """Soft delete: the record moves to Trash and the stored content stays where it is."""
+        self.status, self.trashed_at = self.Status.TRASHED, timezone.now()
+        self.save(update_fields=["status", "trashed_at"])
+
+    def restore_from_trash(self) -> None:
+        """Back to the original Folder under the old name. Raises NameTaken, changing nothing, if it was reused."""
+        self.status, self.trashed_at = self.Status.ACTIVE, None
+        try:
+            with transaction.atomic():  # a savepoint, so a conflict does not poison the surrounding transaction
+                self.save(update_fields=["status", "trashed_at"])
+        except IntegrityError:
+            raise NameTaken from None

@@ -3,23 +3,8 @@ import os
 
 import psycopg
 import pytest
+from conftest import connect
 from psycopg import errors
-
-
-def connect(role, password):
-    return psycopg.connect(
-        host=os.environ["POSTGRES_HOST"], dbname=os.environ["POSTGRES_DB"], user=role, password=password
-    )
-
-
-@pytest.fixture
-def app():
-    conn = connect("filestore_app", os.environ["DB_APP_PASSWORD"])
-    try:
-        yield conn
-    finally:
-        conn.rollback()  # psycopg's `with` would COMMIT: a test that wrongly succeeds must not leave its change behind
-        conn.close()
 
 
 def _tenants_visible(conn):

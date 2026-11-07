@@ -1,10 +1,11 @@
 from django.contrib import admin, messages
-from django.db import IntegrityError, transaction
-from django.utils import timezone
 
+from audit.models import AuditEntry
 from audit.records import record_by_operator
 
-from .models import File
+from .models import File, NameTaken
+
+Action = AuditEntry.Action
 
 
 @admin.register(File)
@@ -35,9 +36,8 @@ class FileAdmin(admin.ModelAdmin):
     def trash_selected(self, request, queryset):
         moved = 0
         for f in queryset.filter(status=File.Status.ACTIVE):
-            f.status, f.trashed_at = File.Status.TRASHED, timezone.now()
-            f.save(update_fields=["status", "trashed_at"])
-            record_by_operator(request.user, "delete", f)
+            f.move_to_trash()
+            record_by_operator(request.user, Action.DELETE, f)
             self.log_change(request, f, "Moved to Trash")
             moved += 1
         self.message_user(request, f"{moved} file(s) moved to Trash.")
@@ -46,14 +46,12 @@ class FileAdmin(admin.ModelAdmin):
     def restore_selected(self, request, queryset):
         restored, blocked = 0, []
         for f in queryset.filter(status=File.Status.TRASHED):
-            f.status, f.trashed_at = File.Status.ACTIVE, None
             try:
-                with transaction.atomic():  # a savepoint: a name conflict must not poison the request
-                    f.save(update_fields=["status", "trashed_at"])
-            except IntegrityError:
+                f.restore_from_trash()
+            except NameTaken:
                 blocked.append(f"{f.name} ({f.tenant})")
                 continue
-            record_by_operator(request.user, "restore", f)
+            record_by_operator(request.user, Action.RESTORE, f)
             self.log_change(request, f, "Restored from Trash")
             restored += 1
         self.message_user(request, f"{restored} file(s) restored.")

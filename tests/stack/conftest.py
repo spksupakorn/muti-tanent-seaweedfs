@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import boto3
 import django
 import httpx
+import psycopg
 import pytest
 from botocore.config import Config
 
@@ -108,3 +109,22 @@ def bearer(login):
         return {"Authorization": f"Bearer {login(who).json()['access']}"}
 
     return _bearer
+
+
+def connect(role, password):
+    """A plain database connection as one of the three roles (no application code in between)."""
+    return psycopg.connect(
+        host=os.environ["POSTGRES_HOST"], dbname=os.environ["POSTGRES_DB"], user=role, password=password
+    )
+
+
+@pytest.fixture
+def app():
+    """The API's database role. Rolled back at the end: psycopg's `with` would COMMIT, so a test that wrongly
+    succeeds at something it should be refused must not leave its change behind."""
+    conn = connect("filestore_app", os.environ["DB_APP_PASSWORD"])
+    try:
+        yield conn
+    finally:
+        conn.rollback()
+        conn.close()

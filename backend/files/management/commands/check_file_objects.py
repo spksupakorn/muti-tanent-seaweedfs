@@ -21,8 +21,8 @@ class Command(BaseCommand):
         checked = 0
         for f in files.iterator():
             checked += 1
-            size = storage.stored_size(f.object_key)
-            if size != crypto.stored_size(f.size):
+            size = storage.object_size(f.object_key)
+            if size != crypto.expected_stored_size(f.size):
                 bad.append(f"{f.object_key} ({'missing' if size is None else f'{size} bytes'})")
         if bad:
             raise CommandError(f"{len(bad)} of {checked} file(s) are missing or incomplete:\n" + "\n".join(bad))

@@ -87,7 +87,7 @@ volume_hits() { # marker -> number of lines of the raw volume files containing i
 }
 check_ciphertext() { # tenant id, file id, marker, plaintext size
   local tid=$1 fid=$2 marker=$3 size=$4 stored
-  docker compose exec -T seaweedfs wget -qO- "http://127.0.0.1:8888/buckets/files/$tid/$fid" > "$WORK/stored" 2>/dev/null
+  docker compose exec -T seaweedfs wget -qO- "http://127.0.0.1:8888/buckets/${S3_BUCKET:-files}/$tid/$fid" > "$WORK/stored" 2>/dev/null
   stored=$(wc -c < "$WORK/stored" | tr -d ' ')
   [ "$stored" -gt 0 ] || { fail "could not read the object from SeaweedFS"; return 1; }
   LC_ALL=C grep -aqF -- "$marker" "$WORK/stored" && { fail "the stored object contains the plaintext"; return 1; }

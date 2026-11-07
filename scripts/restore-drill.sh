@@ -77,7 +77,7 @@ for _ in $(seq 60); do [ -f "$copy" ] && [ "$(wc -c < "$copy")" -eq "$want" ] &&
 out=$(ops purge --tenant "$TENANT")
 case "$out" in *"and 1 trashed file(s);"*) ;; *) die "purge did not remove the file once the Backup had it: $out" ;; esac
 [ "$(docker compose run --rm -T --no-deps backend python manage.py shell -c \
-  "from storage import client; print(client.stored_size('$TID/$(idof late.txt)'))" | tail -n 1)" = None ] || die "object still in storage"
+  "from storage import client; print(client.object_size('$TID/$(idof late.txt)'))" | tail -n 1)" = None ] || die "object still in storage"
 [ -f "$copy" ] || die "the Backup lost its copy"
 ok "Backup caught up: purge removed the record and the stored object; the Backup still has the file"
 
