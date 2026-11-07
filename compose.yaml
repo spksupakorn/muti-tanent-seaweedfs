@@ -23,6 +23,7 @@ x-backend-env: &backend-env
 services:
   postgres:
     image: postgres:18-alpine
+    restart: unless-stopped
     networks: [db]
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-filestore}
@@ -44,7 +45,8 @@ services:
   # because s3.json cannot read env vars. "backend" is limited to one bucket; "admin" exists
   # only so the test suite can prove that limit holds (shortcut: it is rendered in every deployment).
   seaweedfs:
-    image: chrislusf/seaweedfs:4.52
+    image: chrislusf/seaweedfs:${SEAWEEDFS_VERSION:-4.52}
+    restart: unless-stopped
     networks: [storage]
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -72,7 +74,7 @@ services:
       retries: 30
 
   storage-init:
-    image: chrislusf/seaweedfs:4.52
+    image: chrislusf/seaweedfs:${SEAWEEDFS_VERSION:-4.52}
     networks: [storage]
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -90,7 +92,8 @@ services:
   # container (unreachable); with one it binds 0.0.0.0 in the container, and the host only
   # publishes it on 127.0.0.1.
   seaweedfs-admin:
-    image: chrislusf/seaweedfs:4.52
+    image: chrislusf/seaweedfs:${SEAWEEDFS_VERSION:-4.52}
+    restart: unless-stopped
     networks: [storage]
     command: ["admin", "-master=seaweedfs:9333", "-dataDir=/data", "-port=12535"]
     environment:
@@ -130,6 +133,7 @@ services:
   backend:
     build: ./backend
     image: filestore-backend
+    restart: unless-stopped
     networks: [db, storage, web]
     environment:
       <<: *backend-env
@@ -159,6 +163,7 @@ services:
   backoffice:
     build: ./backend
     image: filestore-backend
+    restart: unless-stopped
     networks: [db, web]
     environment:
       DJANGO_SETTINGS_MODULE: config.backoffice_settings
@@ -182,6 +187,7 @@ services:
   # The React app: static files from nginx. The browser calls the API at VITE_API_URL (baked in at build
   # time), so the backend must allow this origin (CORS_ALLOWED_ORIGINS defaults to 127.0.0.1:5173 / localhost:5173).
   frontend:
+    restart: unless-stopped
     build:
       context: ./frontend
       args:
@@ -251,7 +257,7 @@ services:
   # -initialSnapshot also seeds files that exist before it starts (e.g. right after a restore).
   filer-backup:
     profiles: ["backup"]  # off for normal runs and tests, which would otherwise copy every test file into ./backups
-    image: chrislusf/seaweedfs:4.52
+    image: chrislusf/seaweedfs:${SEAWEEDFS_VERSION:-4.52}
     networks: [storage]
     command:
       - filer.backup
@@ -307,7 +313,7 @@ services:
   # would create the directory itself inside the target.
   files-restore:
     profiles: ["restore"]
-    image: chrislusf/seaweedfs:4.52
+    image: chrislusf/seaweedfs:${SEAWEEDFS_VERSION:-4.52}
     networks: [storage]
     entrypoint: ["/bin/sh", "-c"]
     command: ["weed filer.copy /backup/files/* http://seaweedfs:8888/buckets/$${S3_BUCKET}/"]
