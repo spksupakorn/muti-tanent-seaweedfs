@@ -1,0 +1,6 @@
+# filer.backup reads this: copy files to a local directory. Deletions are not mirrored (no -doDeleteFiles),
+# so a File purged or lost later is still in the Backup.
+[sink.local]
+enabled = true
+directory = "/backup/files"
+is_incremental = false

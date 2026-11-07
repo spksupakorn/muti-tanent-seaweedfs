@@ -96,6 +96,7 @@ services:
   # Schema changes run as the owner role, never as the API's role.
   migrate:
     build: ./backend
+    image: filestore-backend
     command: ["python", "manage.py", "migrate", "--noinput"]
     environment:
       <<: *backend-env
@@ -108,12 +109,15 @@ services:
 
   backend:
     build: ./backend
+    image: filestore-backend
     environment:
       <<: *backend-env
       POSTGRES_USER: filestore_app
       POSTGRES_PASSWORD: ${DB_APP_PASSWORD:?set in .env}
-      # Only the backend can unwrap Tenant keys; ops, migrate and tests never get it.
-      MASTER_KEY: ${MASTER_KEY:?set in .env}
+      MASTER_KEY_FILE: /run/secrets/master_key  # the path inside the container; the host path is MASTER_KEY_HOST_FILE
+    # Only the backend can unwrap Tenant keys; ops, migrate and tests never get the key.
+    secrets:
+      - master_key
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
@@ -134,6 +138,7 @@ services:
   ops:
     profiles: ["ops"]
     build: ./backend
+    image: filestore-backend
     entrypoint: ["python", "manage.py"]
     environment:
       <<: *backend-env
@@ -142,6 +147,72 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+
+  # Backup, part 1: continuously copy the stored (encrypted) files to ${BACKUP_DIR}/files.
+  # No -doDeleteFiles: a file purged or lost later stays in the Backup. The health-check objects are skipped.
+  # -initialSnapshot also seeds files that exist before it starts (e.g. right after a restore).
+  filer-backup:
+    profiles: ["backup"]  # off for normal runs and tests, which would otherwise copy every test file into ./backups
+    image: chrislusf/seaweedfs:4.52
+    command:
+      - filer.backup
+      - -filer=seaweedfs:8888
+      - -filerPath=/buckets/files
+      - -filerExcludePaths=/buckets/files/_health
+      - -initialSnapshot
+    volumes:
+      - ./backup/replication.toml:/etc/seaweedfs/replication.toml:ro
+      - ${BACKUP_DIR:-./backups}/files:/backup/files
+    depends_on:
+      storage-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Backup, part 2: a database dump, valid only once the file backup has caught up (see backup/db-backup.sh).
+  # Take one now with: docker compose run --rm db-backup once
+  db-backup:
+    profiles: ["backup"]
+    image: postgres:18-alpine
+    entrypoint: ["/bin/sh", "/scripts/db-backup.sh"]
+    environment:
+      PGHOST: postgres
+      PGDATABASE: ${POSTGRES_DB:-filestore}
+      PGUSER: filestore_backoffice
+      PGPASSWORD: ${DB_BACKOFFICE_PASSWORD:?set in .env}
+      BACKUP_INTERVAL: ${BACKUP_INTERVAL:-3600}
+    volumes:
+      - ./backup:/scripts:ro
+      - ${BACKUP_DIR:-./backups}:/backup
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Restore (see scripts/restore-drill.sh): into a fresh stack, before the first full `up`.
+  db-restore:
+    profiles: ["restore"]
+    image: postgres:18-alpine
+    entrypoint: ["/bin/sh", "/scripts/restore-db.sh"]
+    environment:
+      PGHOST: postgres
+      PGDATABASE: ${POSTGRES_DB:-filestore}
+      PGUSER: ${POSTGRES_USER:-filestore}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+    volumes:
+      - ./backup:/scripts:ro
+      - ${BACKUP_DIR:-./backups}:/backup:ro
+
+  # Copies the children of the backed-up tree (<tenant>/<file>) into the bucket; `filer.copy DIR` alone
+  # would create the directory itself inside the target.
+  files-restore:
+    profiles: ["restore"]
+    image: chrislusf/seaweedfs:4.52
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["weed filer.copy /backup/files/* http://seaweedfs:8888/buckets/$${S3_BUCKET}/"]
+    environment:
+      S3_BUCKET: ${S3_BUCKET:-files}
+    volumes:
+      - ${BACKUP_DIR:-./backups}/files:/backup/files:ro
 
   # Runs inside the compose network: the S3 port is not published to the host.
   tests:
@@ -165,6 +236,10 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+
+secrets:
+  master_key:
+    file: ${MASTER_KEY_HOST_FILE:?absolute path of the master key file on this machine, outside the repo}
 
 volumes:
   pgdata:

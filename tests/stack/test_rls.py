@@ -14,8 +14,12 @@ def connect(role, password):
 
 @pytest.fixture
 def app():
-    with connect("filestore_app", os.environ["DB_APP_PASSWORD"]) as conn:
+    conn = connect("filestore_app", os.environ["DB_APP_PASSWORD"])
+    try:
         yield conn
+    finally:
+        conn.rollback()  # psycopg's `with` would COMMIT: a test that wrongly succeeds must not leave its change behind
+        conn.close()
 
 
 def _tenants_visible(conn):

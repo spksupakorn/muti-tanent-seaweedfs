@@ -3,6 +3,7 @@ from functools import lru_cache
 import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
+from botocore.exceptions import ClientError
 from django.conf import settings
 
 MIB = 1 << 20
@@ -49,3 +50,13 @@ def open_stream(key: str):
 
 def delete(key: str) -> None:
     _s3().delete_object(Bucket=settings.S3_BUCKET, Key=key)
+
+
+def stored_size(key: str):
+    """Size in bytes of a stored object, or None if it does not exist."""
+    try:
+        return _s3().head_object(Bucket=settings.S3_BUCKET, Key=key)["ContentLength"]
+    except ClientError as e:
+        if e.response["Error"]["Code"] in ("404", "NoSuchKey", "NotFound"):
+            return None
+        raise

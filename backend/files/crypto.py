@@ -59,6 +59,11 @@ def unwrap_data_key(tenant_key: bytes, file_id, wrapped: bytes) -> bytes:
     return _unwrap(tenant_key, wrapped, b"data-key:" + file_id.bytes)
 
 
+def stored_size(plain_size: int) -> int:
+    """Bytes a File occupies in storage: its content plus one tag per segment (an empty file is one segment)."""
+    return plain_size + TAG * max(1, -(-plain_size // SEGMENT))
+
+
 def _nonce(index: int) -> bytes:
     return index.to_bytes(12, "big")
 

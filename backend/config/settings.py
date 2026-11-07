@@ -57,7 +57,9 @@ S3_SECRET_KEY = os.environ["S3_SECRET_KEY"]
 CORS_ALLOWED_ORIGINS = os.environ.get("CORS_ALLOWED_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173").split(",")
 CORS_ALLOW_HEADERS = (*default_headers, "x-tenant-id")
 
-# Wraps every Tenant key (ADR 0001). Only the backend gets it; unset elsewhere on purpose.
-MASTER_KEY = base64.b64decode(os.environ["MASTER_KEY"]) if os.environ.get("MASTER_KEY") else None
+# Wraps every Tenant key (ADR 0001). Read from a file (a compose secret) kept outside the repo, every
+# volume and every Backup. Only the backend gets it; unset elsewhere on purpose.
+_master_key_file = os.environ.get("MASTER_KEY_FILE")
+MASTER_KEY = base64.b64decode(Path(_master_key_file).read_text().strip()) if _master_key_file else None
 if MASTER_KEY is not None and len(MASTER_KEY) != 32:
-    raise ImproperlyConfigured("MASTER_KEY must be 32 bytes, base64-encoded")
+    raise ImproperlyConfigured("The master key file must hold 32 bytes, base64-encoded")
