@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiError,
+  AuditEntry,
   FileItem,
   Listing,
   Tenant,
   TrashedItem,
   download,
   getTenantId,
+  listAudit,
   listFiles,
   listTenants,
   listTrash,
@@ -77,12 +79,29 @@ function Login({ onDone }: { onDone: () => void }) {
   );
 }
 
-type View = "files" | "trash";
+type View = "files" | "trash" | "audit";
+const VIEWS: View[] = ["files", "trash", "audit"];
+
+// The address bar holds the view (#/files, #/trash, #/audit), so a link or a typed URL opens it directly.
+function viewFromHash(): View {
+  const name = window.location.hash.replace(/^#\//, "");
+  return VIEWS.find((v) => v === name) ?? "files";
+}
+
+function useView(): [View, (view: View) => void] {
+  const [view, setView] = useState<View>(viewFromHash());
+  useEffect(() => {
+    const onChange = () => setView(viewFromHash());
+    window.addEventListener("hashchange", onChange);
+    return () => window.removeEventListener("hashchange", onChange);
+  }, []);
+  return [view, (next) => (window.location.hash = `#/${next}`)];
+}
 
 function Files() {
   const [tenants, setTenants] = useState<Tenant[] | null>(null);
   const [tenantId, setTenant] = useState<string | null>(getTenantId());
-  const [view, setView] = useState<View>("files");
+  const [view, setView] = useView();
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -103,8 +122,9 @@ function Files() {
   function switchTenant(id: string) {
     setTenantId(id);
     setTenant(id);
-    setView("files");
   }
+
+  const role = tenants?.find((t) => t.id === tenantId)?.role;
 
   return (
     <main className="card">
@@ -137,8 +157,18 @@ function Files() {
             <button className={view === "trash" ? "tab on" : "tab"} aria-current={view === "trash"} onClick={() => setView("trash")}>
               Trash
             </button>
+            {role === "admin" && (
+              <button className={view === "audit" ? "tab on" : "tab"} aria-current={view === "audit"} onClick={() => setView("audit")}>
+                Audit log
+              </button>
+            )}
           </nav>
-          {view === "files" ? <Browser key={tenantId} /> : <Trash key={tenantId} />}
+          {view === "files" && <Browser key={tenantId} />}
+          {view === "trash" && <Trash key={tenantId} />}
+          {view === "audit" && role === "admin" && <Audit key={tenantId} />}
+          {view === "audit" && role === "member" && (
+            <p role="alert" className="error">Only organization admins can read the audit log.</p>
+          )}
         </>
       )}
     </main>
@@ -376,6 +406,65 @@ function Trash() {
           </tbody>
         </table>
       )}
+    </section>
+  );
+}
+
+const PAGE = 50;
+const ACTION_TEXT: Record<AuditEntry["action"], string> = {
+  upload: "Uploaded",
+  download: "Downloaded",
+  rename: "Renamed",
+  move: "Moved",
+  delete: "Moved to Trash",
+  restore: "Restored",
+};
+
+function Audit() {
+  const [entries, setEntries] = useState<AuditEntry[] | null>(null);
+  const [more, setMore] = useState(false);
+  const [error, setError] = useState("");
+
+  const loadPage = useCallback(async (offset: number) => {
+    try {
+      const page = await listAudit(PAGE, offset);
+      setEntries((current) => (offset === 0 ? page : [...(current ?? []), ...page]));
+      setMore(page.length === PAGE);
+      setError("");
+    } catch (e) {
+      setError(errorText(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadPage(0);
+  }, [loadPage]);
+
+  return (
+    <section>
+      <p>
+        <small>Who did what to which file in this organization, newest first.</small>
+      </p>
+      {error && <p role="alert" className="error">{error}</p>}
+      {entries && (
+        <table>
+          <thead>
+            <tr><th>When</th><th>Who</th><th>Action</th><th>File</th></tr>
+          </thead>
+          <tbody>
+            {entries.map((e) => (
+              <tr key={e.id}>
+                <td>{new Date(e.created_at).toLocaleString()}</td>
+                <td>{e.by_operator ? "Platform operator" : (e.user_email ?? "Deleted user")}</td>
+                <td>{ACTION_TEXT[e.action]}</td>
+                <td>{e.file_name} <small>{e.file_folder}</small></td>
+              </tr>
+            ))}
+            {entries.length === 0 && <tr><td colSpan={4} className="empty">No activity yet.</td></tr>}
+          </tbody>
+        </table>
+      )}
+      {more && entries && <button onClick={() => void loadPage(entries.length)}>Load more</button>}
     </section>
   );
 }

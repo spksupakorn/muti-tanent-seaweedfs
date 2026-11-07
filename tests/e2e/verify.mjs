@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const { EMAIL, PW, TENANT_A, TENANT_B, TID_A, TOKEN_A } = process.env;
+const { EMAIL, PW, TENANT_A, TENANT_B, TENANT_C, TID_A, TID_B, TID_C, TOKEN_A } = process.env;
 const APP = "http://127.0.0.1:5173";
 const API = "http://127.0.0.1:8000";
 const sha = (b) => createHash("sha256").update(b).digest("hex");
@@ -45,7 +45,7 @@ await page.getByLabel("Password").fill(PW);
 await page.getByRole("button", { name: "Sign in" }).click();
 await page.getByLabel("Organization").waitFor();
 const options = await page.getByLabel("Organization").locator("option").allInnerTexts();
-check("after login both organizations are listed with the user's role", options.length === 2 && options.some((o) => o.includes(TENANT_A) && o.includes("admin")) && options.some((o) => o.includes(TENANT_B) && o.includes("member")), options.join(" | "));
+check("after login all three organizations are listed with the user's role", options.length === 3 && options.some((o) => o.includes(TENANT_A) && o.includes("(admin)")) && options.some((o) => o.includes(TENANT_B) && o.includes("(member)")) && options.some((o) => o.includes(TENANT_C) && o.includes("(admin)")), options.join(" | "));
 
 // --- tenant A: empty root except the folder "docs"
 await page.getByLabel("Organization").selectOption({ label: `${TENANT_A} (admin)` });
@@ -195,6 +195,53 @@ await page.getByRole("cell", { name: "b-only.txt" }).waitFor();
 await page.getByLabel("Organization").selectOption({ label: `${TENANT_A} (admin)` });
 await page.getByRole("cell", { name: "big.bin" }).waitFor();
 check("switching back shows only tenant A's files", (await page.getByRole("cell", { name: "b-only.txt" }).count()) === 0);
+
+// --- audit log: admins only, per organization
+const form2 = new FormData();
+form2.append("file", new Blob(["c"]), "only-in-c.txt");
+await fetch(`${API}/api/files`, { method: "POST", headers: { Authorization: `Bearer ${TOKEN_A}`, "X-Tenant-ID": TID_C }, body: form2 });
+// 55 more uploads, so organization C's log (56 entries) needs a second page of 50.
+for (let i = 0; i < 55; i++) {
+  const f = new FormData();
+  f.append("file", new Blob(["x"]), `c-${i}.txt`);
+  await fetch(`${API}/api/files`, { method: "POST", headers: { Authorization: `Bearer ${TOKEN_A}`, "X-Tenant-ID": TID_C }, body: f });
+}
+check("an admin sees the Audit log tab", (await tab("Audit log").count()) === 1);
+await tab("Audit log").click();
+await page.getByRole("columnheader", { name: "Who" }).waitFor();
+check("the address bar holds the view", page.url().endsWith("#/audit"));
+const text = await page.getByRole("table").innerText();
+check("it shows who did what to which file", text.includes(EMAIL) && /Renamed\s+renamed\.txt/.test(text) && text.includes("Uploaded") && text.includes("big.bin"));
+check("an action by the platform shows as the platform, not as a person", /Platform operator\s+Moved to Trash\s+removed-by-platform\.txt/.test(text));
+check("this organization's log does not show another organization's files", !text.includes("only-in-c.txt"));
+
+await page.getByLabel("Organization").selectOption({ label: `${TENANT_C} (admin)` });
+await page.getByRole("cell", { name: /c-54\.txt/ }).waitFor(); // the newest entry
+const textC = await page.getByRole("table").innerText();
+check("switching organization switches the log", !textC.includes("big.bin") && textC.includes("Uploaded") && page.url().endsWith("#/audit"));
+const dataRows = () => page.getByRole("row").filter({ hasNot: page.getByRole("columnheader") });
+check("a long log shows one page of 50 first", (await dataRows().count()) === 50 && (await page.getByRole("button", { name: "Load more" }).count()) === 1);
+await page.getByRole("button", { name: "Load more" }).click();
+await page.getByRole("cell", { name: /only-in-c\.txt/ }).waitFor(); // the oldest entry, on page two
+check("Load more adds the rest and then goes away", (await dataRows().count()) === 56 && (await page.getByRole("button", { name: "Load more" }).count()) === 0);
+await page.getByLabel("Organization").selectOption({ label: `${TENANT_A} (admin)` });
+await page.getByRole("cell", { name: /big\.bin/ }).first().waitFor();
+check("and back again", !(await page.getByRole("table").innerText()).includes("only-in-c.txt"));
+
+// A member: no tab, and the address is refused, in the page and by the server.
+await page.getByLabel("Organization").selectOption({ label: `${TENANT_B} (member)` });
+await page.getByRole("alert").waitFor();
+check("a member opening the audit address is refused", (await page.getByRole("alert").innerText()).includes("Only organization admins"));
+check("and sees no audit table", (await page.getByRole("columnheader", { name: "Who" }).count()) === 0);
+check("a member does not get the Audit log tab", (await tab("Audit log").count()) === 0);
+await page.reload();
+await page.getByRole("alert").waitFor();
+check("the refusal holds after a fresh page load on that address", (await page.getByRole("alert").innerText()).includes("Only organization admins") && page.url().endsWith("#/audit"));
+const asMember = await fetch(`${API}/api/audit`, { headers: { Authorization: `Bearer ${TOKEN_A}`, "X-Tenant-ID": TID_B } });
+check("the server itself refuses the member too (403)", asMember.status === 403);
+await tab("Files").click();
+await page.getByLabel("Organization").selectOption({ label: `${TENANT_A} (admin)` });
+await page.getByText("📁 docs").waitFor();
 
 // --- expired access token: refreshed silently
 await page.evaluate(() => {

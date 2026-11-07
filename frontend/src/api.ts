@@ -5,6 +5,16 @@ export type Tenant = { id: string; name: string; role: "admin" | "member" };
 export type FileItem = { id: string; name: string; folder: string; size: number; content_type: string; created_at: string };
 export type Listing = { folder: string; folders: string[]; files: FileItem[] };
 export type TrashedItem = FileItem & { trashed_at: string };
+export type AuditEntry = {
+  id: string;
+  action: "upload" | "download" | "rename" | "move" | "delete" | "restore";
+  file_id: string | null;
+  file_name: string;
+  file_folder: string;
+  user_email: string | null;
+  by_operator: boolean;
+  created_at: string;
+};
 
 export class ApiError extends Error {
   constructor(
@@ -191,3 +201,7 @@ export async function restoreFile(id: string): Promise<FileItem> {
   if (!res.ok) throw await errorOf(res);
   return res.json();
 }
+
+/** The Tenant's audit log, newest first. Only a Tenant admin may read it: anyone else gets a 403. */
+export const listAudit = (limit: number, offset: number) =>
+  json<AuditEntry[]>(`/api/audit?limit=${limit}&offset=${offset}`);
